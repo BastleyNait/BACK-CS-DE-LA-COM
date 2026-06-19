@@ -1,0 +1,18 @@
+# Entorno y secretos
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Vercel
+.vercel
+
+# Claude Code (local)
+.claude/
