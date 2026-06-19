@@ -1,119 +1,70 @@
-# Desplegar el SSP Backend en Vercel
+# SSP Backend — Despliegue en Vercel
 
-FastAPI corre en Vercel como **Serverless Functions** (runtime `@vercel/python`).
-Este repo ya está configurado para ello:
+## Estado: ✅ DESPLEGADO Y FUNCIONANDO
 
-- `api/index.py` → entrypoint ASGI que Vercel detecta.
-- `vercel.json` → reescribe todas las rutas hacia FastAPI.
-- `app/core/config.py` → lee `CORS_ORIGINS` como texto separado por comas.
-- `app/db/session.py` → usa `NullPool` (apto para serverless).
+- **API:** https://back-cs-de-la-com.vercel.app
+- **Docs (Swagger):** https://back-cs-de-la-com.vercel.app/docs
+- **Proyecto Vercel:** `back-cs-de-la-com` (team CS DE LA COMUNICACION)
+- **Repo:** https://github.com/BastleyNait/BACK-CS-DE-LA-COM
 
-Faltan **2 pasos que solo tú puedes hacer**: una base de datos en la nube y las
-variables de entorno. Sigue esta guía.
+## Base de datos
 
----
+- **Proyecto Supabase:** CS-DE-COMUNICACIONs (`pddyxgcvczomdemquvum`, región sa-east-1)
+- Tablas `users` y `aulas` (espejo de `app/models/models.py`), con los usuarios y aulas de prueba sembrados.
+- El backend se conecta por el **pooler en modo Transaction** (puerto 6543, host `aws-1-sa-east-1`), apto para serverless.
 
-## 1. Base de datos PostgreSQL en la nube — YA CREADA ✅
+## Variables de entorno (configuradas en Vercel → Settings → Environment Variables)
 
-Ya existe un proyecto Supabase dedicado, con esquema y datos sembrados:
+| Clave | Descripción |
+|-------|-------------|
+| `DATABASE_URL` | `postgresql://postgres.pddyxgcvczomdemquvum:<password>@aws-1-sa-east-1.pooler.supabase.com:6543/postgres` |
+| `SECRET_KEY` | clave para firmar los JWT |
+| `CORS_ORIGINS` | orígenes permitidos (CSV), incluye `https://cs-comunicacion.vercel.app` |
 
-| Dato | Valor |
-|------|-------|
-| Proyecto | `ssp-backend` (org BOOM POS) |
-| Project ref | `tyhvaplchdaruqdonivc` |
-| Región | `us-east-1` |
-| API URL | https://tyhvaplchdaruqdonivc.supabase.co |
-| Dashboard | https://supabase.com/dashboard/project/tyhvaplchdaruqdonivc |
+> Los valores reales están en Vercel (cifrados), no en este repo.
 
-Las tablas `users` y `aulas` ya están creadas (espejo exacto de
-`app/models/models.py`) y sembradas con los 3 usuarios y 2 aulas de prueba.
-**No necesitas correr el seed.**
+## Endpoints
 
-### Obtener el `DATABASE_URL`
-Por seguridad, la contraseña de la BD no se expone por API. Sácala del dashboard:
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/api/v1/auth/login` | Login → JWT + datos del usuario |
+| POST | `/api/v1/auth/register` | Registrar cuenta |
+| POST | `/api/v1/auth/recover` | Solicitar reset de contraseña (aún sin envío de email) |
+| GET | `/api/v1/aulas` | Listar aulas (RBAC por rol) |
+| POST | `/api/v1/aulas` | Crear aula (solo ADMIN/PROFESOR) |
 
-1. Abre **Dashboard → (proyecto ssp-backend) → botón "Connect"** (arriba).
-2. Elige **Transaction pooler** (puerto **6543**) y copia la cadena. Se ve así:
-   ```
-   postgresql://postgres.tyhvaplchdaruqdonivc:[PASSWORD]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
-   ```
-3. Reemplaza `[PASSWORD]` por la contraseña de la BD. Si no la tienes a mano,
-   en **Settings → Database → "Reset database password"** generas una nueva.
+## Usuarios de prueba
 
-> Usa el **pooler (6543)**, no la conexión directa (5432): en serverless la
-> directa agota las conexiones.
+| Rol | Correo | Contraseña |
+|-----|--------|------------|
+| Admin | admin@unsa.edu.pe | admin123 |
+| Profesor | profesor@unsa.edu.pe | profesor123 |
+| Alumno | alumno@unsa.edu.pe | alumno123 |
 
----
+## Conectar el frontend
 
-## 2. (Solo si cambias el esquema en el futuro)
-
-La BD ya está sembrada, así que puedes saltarte este paso. Si más adelante
-modificas los modelos, vuelve a sembrar desde tu PC apuntando a la BD remota:
-
-```bash
-cd ssp-backend/ssp-backend
-python -m venv venv
-venv\Scripts\activate            # Windows
-pip install -r requirements.txt
-
-set DATABASE_URL=postgresql://postgres.tyhvaplchdaruqdonivc:PASS@aws-0-us-east-1.pooler.supabase.com:6543/postgres
-python -m app.db.seed
-```
-
----
-
-## 3. Crear el proyecto en Vercel
-
-El frontend ya es un proyecto Vercel aparte. El backend debe ser **su propio
-proyecto** (no se puede mezclar Vite estático + Python en el mismo).
-
-1. En Vercel → **Add New → Project** → importa este repositorio.
-2. **IMPORTANTE — Root Directory:** `ssp-backend/ssp-backend`
-   (no la raíz del repo; ahí está el frontend).
-3. Framework Preset: **Other**. Vercel detectará `requirements.txt` + `api/`.
-
----
-
-## 4. Variables de entorno en Vercel
-
-En **Project → Settings → Environment Variables** añade:
-
-| Clave | Valor |
-|-------|-------|
-| `DATABASE_URL` | la cadena del pooler de Supabase (paso 1) |
-| `SECRET_KEY` | genera una: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
-| `CORS_ORIGINS` | la URL de tu frontend, ej. `https://cs-comunicacion.vercel.app` |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` (opcional) |
-
-Luego haz **Deploy** (o redeploy si ya estaba).
-
----
-
-## 5. Conectar el frontend
-
-En el frontend, apunta la `BASE_URL` del `apiClient.ts` al dominio del backend:
+En el frontend, apunta la `BASE_URL` del `apiClient.ts` al backend:
 
 ```ts
-export const BASE_URL = "https://<tu-backend>.vercel.app";
+export const BASE_URL = "https://back-cs-de-la-com.vercel.app";
 ```
 
-Y asegúrate de que esa URL del frontend esté en `CORS_ORIGINS` (paso 4).
+Y asegúrate de que el dominio del frontend esté en `CORS_ORIGINS` (variable en Vercel).
 
----
+## Re-desplegar
 
-## 6. Verificar
+Desde `ssp-backend/ssp-backend/`:
 
-- `https://<tu-backend>.vercel.app/` → `{"status":"ok","app":"SSP Backend"}`
-- `https://<tu-backend>.vercel.app/docs` → Swagger UI.
-- Prueba el login con `admin@unsa.edu.pe` / `admin123`.
+```bash
+vercel --prod
+```
 
----
+(O conecta el repo de GitHub a Vercel para auto-deploy en cada push.)
 
-## Notas / limitaciones de serverless
+## Arquitectura para Vercel (notas)
 
-- **Cold starts:** la primera petición tras inactividad tarda 1–3 s (incluye el
-  hash bcrypt). Es normal en el plan Hobby.
-- **`/recover`** solo responde un mensaje; no envía email real todavía.
-- Si cambias modelos, vuelve a correr el seed/migración contra la BD remota.
-- `uvicorn` y `alembic` están en `requirements.txt` solo para uso local; Vercel
-  los instala pero no los necesita en runtime.
+- `api/index.py` → entrypoint ASGI; Vercel detecta FastAPI y sirve `app/main.py`.
+- `app/core/config.py` → `CORS_ORIGINS` se lee como **str** (no `List`), porque
+  pydantic-settings hace `json.loads()` sobre los campos lista de las env vars y
+  rompería con un CSV. Se parsea en la property `cors_origins`.
+- `app/db/session.py` → `NullPool` (el pooler de Supabase gestiona las conexiones).

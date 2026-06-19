@@ -1,7 +1,6 @@
 import json
 from typing import List
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,25 +11,23 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:4173"]
 
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def _parse_cors_origins(cls, v):
-        """
-        Permite definir CORS_ORIGINS en Vercel como texto plano separado por
-        comas (ej: "https://app.vercel.app,https://otro.com") además del
-        formato JSON. Sin esto, pydantic-settings intenta json.loads sobre la
-        env var y la app crashea al arrancar.
-        """
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return []
-            if s.startswith("["):
-                return json.loads(s)
-            return [origin.strip() for origin in s.split(",") if origin.strip()]
-        return v
+    # OJO: se declara como `str`, no `List[str]`, a propósito.
+    # pydantic-settings intenta json.loads() sobre los campos tipo lista/dict al
+    # leerlos de variables de entorno (antes de cualquier validator), así que un
+    # valor CSV como "https://a.com,https://b.com" rompería el arranque con
+    # JSONDecodeError. Como str se lee literal y lo parseamos en `cors_origins`.
+    CORS_ORIGINS: str = "http://localhost:5173,http://localhost:4173"
+
+    @property
+    def cors_origins(self) -> List[str]:
+        """Lista de orígenes permitidos. Acepta CSV o un JSON array."""
+        s = self.CORS_ORIGINS.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            return json.loads(s)
+        return [origin.strip() for origin in s.split(",") if origin.strip()]
 
 
 settings = Settings()
