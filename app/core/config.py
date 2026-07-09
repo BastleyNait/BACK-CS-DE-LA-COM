@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # valor CSV como "https://a.com,https://b.com" rompería el arranque con
     # JSONDecodeError. Como str se lee literal y lo parseamos en `cors_origins`.
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:4173"
+    UPLOAD_DIR: str = "uploads"
 
     @property
     def cors_origins(self) -> List[str]:
