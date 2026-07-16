@@ -16,3 +16,6 @@ __pycache__/
 
 # Claude Code (local)
 .claude/
+
+# Duplicado temporal (no trackear)
+ssp-backend/

@@ -17,6 +17,10 @@ from app.routers import (
     tareas,
 )
 
+from app.db.session import engine, Base
+# Crear tablas si no existen al iniciar la aplicación (útil para serverless en Vercel)
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
     title="SSP — Sistema de Seguimiento de Practicantes",
     description="Backend FastAPI para el SSP (UNSA, FIPS — Grupo 7).",
