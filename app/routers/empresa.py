@@ -11,11 +11,22 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.models.models import Empresa, Supervisor, User
+from app.models.models import (
+    Empresa,
+    Evaluacion,
+    EvaluacionEstadoEnum,
+    Practica,
+    PracticaEstadoEnum,
+    RegistroHoras,
+    RegistroHorasEstadoEnum,
+    Supervisor,
+    User,
+)
 from app.schemas.schemas import (
     CreateEmpresaRequest,
     CreateSupervisorRequest,
     EmpresaOut,
+    ResumenEmpresaOut,
     SupervisorOut,
 )
 
@@ -40,6 +51,7 @@ def _to_supervisor_out(s: Supervisor) -> SupervisorOut:
     return SupervisorOut(
         id=s.id,
         empresaId=s.empresa_id,
+        userId=s.user_id,
         nombres=s.nombres,
         apellidos=s.apellidos,
         cargo=s.cargo,
@@ -159,3 +171,64 @@ def register_supervisor(
     db.commit()
     db.refresh(supervisor)
     return _to_supervisor_out(supervisor)
+
+
+# ── GET /api/v1/empresa/resumen ───────────────────────────────────────────────
+
+
+@router.get("/resumen", response_model=ResumenEmpresaOut)
+def resumen_empresa(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Panel de control de empresa (HU-24): solo el supervisor externo."""
+    if current_user.role.value != "SUPERVISOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo un supervisor externo puede ver este panel.",
+        )
+
+    empresa_ids = [
+        s.empresa_id
+        for s in db.query(Supervisor).filter(Supervisor.user_id == current_user.id)
+    ]
+    practicas = (
+        db.query(Practica).filter(Practica.empresa_id.in_(empresa_ids)).all()
+        if empresa_ids
+        else []
+    )
+    activas = [p for p in practicas if p.estado != PracticaEstadoEnum.CERRADA]
+    practicantes_activos = len({p.practicante_id for p in activas})
+
+    practica_ids = [p.id for p in practicas]
+    horas = (
+        db.query(RegistroHoras).filter(RegistroHoras.practica_id.in_(practica_ids)).all()
+        if practica_ids
+        else []
+    )
+    horas_por_validar = len(
+        [h for h in horas if h.estado_validacion == RegistroHorasEstadoEnum.PENDIENTE]
+    )
+
+    evaluaciones = (
+        db.query(Evaluacion).filter(Evaluacion.empresa_id.in_(empresa_ids)).all()
+        if empresa_ids
+        else []
+    )
+    evaluaciones_pendientes = len(
+        [e for e in evaluaciones if e.estado == EvaluacionEstadoEnum.PENDIENTE]
+    )
+
+    cumplimiento_promedio = None
+    if practicas:
+        promedio = sum(
+            min(1, p.horas_acumuladas / p.horas_minimas) for p in practicas if p.horas_minimas
+        ) / len(practicas)
+        cumplimiento_promedio = round(promedio * 100)
+
+    return ResumenEmpresaOut(
+        practicantesActivos=practicantes_activos,
+        horasPorValidar=horas_por_validar,
+        evaluacionesPendientes=evaluaciones_pendientes,
+        cumplimientoPromedio=cumplimiento_promedio,
+    )

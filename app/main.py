@@ -8,7 +8,9 @@ from app.routers import (
     archivos,
     aulas,
     auth,
+    comunicacion,
     empresa,
+    metas,
     notificaciones,
     practicas,
     profesor,
@@ -21,10 +23,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[
+        "https://cs-comunicacion.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,6 +48,8 @@ app.include_router(admin.router, prefix=API_PREFIX)
 app.include_router(empresa.router, prefix=API_PREFIX)
 app.include_router(practicas.router, prefix=API_PREFIX)
 app.include_router(notificaciones.router, prefix=API_PREFIX)
+app.include_router(metas.router, prefix=API_PREFIX)
+app.include_router(comunicacion.router, prefix=API_PREFIX)
 
 
 @app.get("/", tags=["health"])

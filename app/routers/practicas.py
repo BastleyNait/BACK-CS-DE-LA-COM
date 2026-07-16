@@ -58,6 +58,7 @@ def _to_registro_out(r: RegistroHoras) -> RegistroHorasOut:
         fecha=r.fecha.isoformat() if r.fecha else "",
         horas=r.horas,
         descripcion=r.descripcion,
+        estadoValidacion=r.estado_validacion.value,
     )
 
 

@@ -169,3 +169,35 @@ def descargar_archivo(
         filename=arch.nombre_original,
         media_type=arch.tipo_mime,
     )
+
+
+# ── DELETE /api/v1/aulas/{aula_id}/archivos/{archivo_id} ─────────────────────
+
+
+@router.delete("/aulas/{aula_id}/archivos/{archivo_id}", status_code=204)
+def eliminar_archivo(
+    aula_id: str,
+    archivo_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Elimina un material del aula. Solo el profesor del aula (o admin)."""
+    aula = _verificar_acceso(aula_id, current_user, db)
+    if current_user.role.value not in ("ADMIN", "PROFESOR") or (
+        current_user.role.value == "PROFESOR" and aula.profesor_id != current_user.id
+    ):
+        raise HTTPException(status_code=403, detail="Solo el profesor puede eliminar materiales.")
+
+    arch = (
+        db.query(Archivo)
+        .filter(Archivo.id == archivo_id, Archivo.aula_id == aula_id)
+        .first()
+    )
+    if arch is None:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado.")
+
+    ruta = UPLOAD_BASE / aula_id / arch.nombre_guardado
+    if ruta.exists():
+        ruta.unlink()
+    db.delete(arch)
+    db.commit()
