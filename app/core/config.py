@@ -1,4 +1,5 @@
 import json
+import os
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -12,6 +13,11 @@ class Settings(BaseSettings):
     # lista al leer env vars, y rompe con JSONDecodeError si Vercel manda un
     # CSV plano en vez de un array JSON. Se parsea abajo en `cors_origins`.
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:4173,http://localhost:3000,https://cs-comunicacion.vercel.app"
+    # En Vercel el filesystem del proyecto es de solo lectura; solo /tmp es
+    # escribible (y efímero: se pierde entre invocaciones/cold starts). Si
+    # no se define UPLOAD_DIR por env var, cae a /tmp/uploads en Vercel para
+    # no romper con "Read-only file system" al subir un archivo.
+    UPLOAD_DIR: str = "/tmp/uploads" if os.getenv("VERCEL") else "uploads"
 
     class Config:
         env_file = ".env"
