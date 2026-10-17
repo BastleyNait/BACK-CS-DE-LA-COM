@@ -13,14 +13,22 @@ def check_test_target(settings):
         raise ValueError("Completa TEST_DATABASE_PROJECT_REF con el proyecto de prueba.")
     if not settings.DATABASE_URL:
         raise ValueError("Completa DATABASE_URL en el archivo .env local.")
+    message = "DATABASE_URL debe apuntar al proyecto de prueba indicado, usando conexión directa o Session pooler en 5432."
     try:
         value = settings.DATABASE_URL
         url = make_url("postgresql://" + value[11:] if value.startswith("postgres://") else value)
+    except Exception:
+        raise ValueError(message) from None
+    if not url.password:
+        raise ValueError("Falta la contraseña de PostgreSQL en DATABASE_URL.")
+    if url.password in {"[YOUR-PASSWORD]", "YOUR-PASSWORD", "[YOUR_PASSWORD]", "YOUR_PASSWORD", "PASSWORD_HERE"}:
+        raise ValueError("DATABASE_URL todavía contiene [YOUR-PASSWORD]. Sustituye el marcador por la contraseña de PostgreSQL y guarda .env.")
+    try:
         direct = url.host == f"db.{project}.supabase.co" and url.username == "postgres"
         pooled = bool(url.host and url.host.endswith(".pooler.supabase.com")) and url.username == f"postgres.{project}"
-        valid = url.get_backend_name() == "postgresql" and url.port == 5432 and url.database == "postgres" and (direct or pooled) and url.password and "[" not in url.password
+        valid = url.get_backend_name() == "postgresql" and url.port == 5432 and url.database == "postgres" and (direct or pooled)
     except Exception:
         valid = False
     if not valid:
-        raise ValueError("DATABASE_URL debe apuntar al proyecto de prueba indicado, usando conexión directa o Session pooler en 5432, con contraseña completa.")
+        raise ValueError(message)
     return url
