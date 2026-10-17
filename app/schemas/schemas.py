@@ -6,7 +6,7 @@ Reflejan exactamente los tipos definidos en src/types/index.ts del frontend.
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, EmailStr, Field, StrictInt, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, EmailStr, Field, StrictBool, StrictInt, field_validator, model_validator
 
 Role = Literal["ADMIN", "PROFESOR", "ALUMNO", "SUPERVISOR"]
 AulaEstado = Literal["ACTIVA", "CONCLUIDA"]
@@ -508,6 +508,7 @@ class AsistenciaItemOut(BaseModel):
     practicanteId: str
     practicanteNombre: str
     presente: bool
+    registrado: bool
 
 
 class AsistenciaSesionOut(BaseModel):
@@ -516,16 +517,20 @@ class AsistenciaSesionOut(BaseModel):
     aulaId: str
     fecha: str
     items: list[AsistenciaItemOut]
+    versionAsistencia: Literal[1] = 1
+    estadoRegistro: Literal["PROPUESTO", "GUARDADO", "PARCIAL"]
+    revision: str
 
 
 class AsistenciaItemIn(BaseModel):
     practicanteId: str
-    presente: bool
+    presente: StrictBool
 
 
 class GuardarAsistenciaRequest(BaseModel):
     fecha: str  # ISO date (YYYY-MM-DD)
     items: list[AsistenciaItemIn]
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 # ── Docencia del profesor: revisar y calificar entregas (HU-26) ───────────────

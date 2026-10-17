@@ -179,8 +179,11 @@ def _aula_out(aula: Aula) -> AulaOut:
     )
 
 
-def _get_aula(aula_id: str, db: Session) -> Aula:
-    aula = db.query(Aula).filter(Aula.id == aula_id).first()
+def _get_aula(aula_id: str, db: Session, lock=False) -> Aula:
+    query = db.query(Aula).filter(Aula.id == aula_id)
+    if lock:
+        query = query.populate_existing().with_for_update()
+    aula = query.first()
     if aula is None:
         raise HTTPException(status_code=404, detail="Aula no encontrada.")
     return aula
@@ -198,7 +201,7 @@ def cambiar_estado_aula(
 ):
     """Marca un aula como ACTIVA o CONCLUIDA (archivada)."""
     _solo_admin(current_user)
-    aula = _get_aula(aula_id, db)
+    aula = _get_aula(aula_id, db, lock=True)
     aula.estado = AulaEstadoEnum(payload.estado)
     _auditar(db, current_user, "ESTADO_AULA", f"{aula.nombre} → {payload.estado}")
     db.commit()
@@ -218,7 +221,7 @@ def asignar_profesor(
 ):
     """Asigna un profesor (jefe de prácticas) como responsable del aula."""
     _solo_admin(current_user)
-    aula = _get_aula(aula_id, db)
+    aula = _get_aula(aula_id, db, lock=True)
 
     profesor = db.query(User).filter(User.id == payload.profesorId).first()
     if profesor is None:
@@ -285,7 +288,7 @@ def matricular(
 ):
     """Inscribe un alumno en el aula. Idempotente (409 si ya está inscrito)."""
     _solo_admin(current_user)
-    aula = _get_aula(aula_id, db)
+    aula = _get_aula(aula_id, db, lock=True)
 
     alumno = db.query(User).filter(User.id == payload.alumnoId).first()
     if alumno is None or alumno.role != RoleEnum.ALUMNO:
@@ -315,7 +318,7 @@ def desmatricular(
 ):
     """Retira la matrícula de un alumno del aula."""
     _solo_admin(current_user)
-    aula = _get_aula(aula_id, db)
+    aula = _get_aula(aula_id, db, lock=True)
 
     ins = (
         db.query(Inscripcion)

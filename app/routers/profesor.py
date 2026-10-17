@@ -6,6 +6,9 @@ Rutas: /api/v1/profesor/*
 """
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+import json
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -14,6 +17,8 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.models import (
     Aula,
+    AulaEstadoEnum,
+    Auditoria,
     Empresa,
     Entrega,
     EntregaEstadoEnum,
@@ -259,9 +264,12 @@ def resumen_profesor(
 # ── Helpers de docencia (HU-25/26/27/28) ──────────────────────────────────────
 
 
-def _aula_del_profesor(aula_id: str, user: User, db: Session) -> Aula:
+def _aula_del_profesor(aula_id: str, user: User, db: Session, lock=False) -> Aula:
     """Devuelve el aula si el profesor la dicta (o si es admin); si no, 403/404."""
-    aula = db.query(Aula).filter(Aula.id == aula_id).first()
+    query = db.query(Aula).filter(Aula.id == aula_id)
+    if lock:
+        query = query.populate_existing().with_for_update()
+    aula = query.first()
     if aula is None:
         raise HTTPException(status_code=404, detail="Aula no encontrada.")
     if user.role.value != "ADMIN" and aula.profesor_id != user.id:
@@ -281,7 +289,9 @@ def _alumnos_de_aula(aula_id: str, db: Session) -> list[User]:
 def _rango_dia(fecha_str: str) -> tuple[datetime, datetime]:
     """Convierte 'YYYY-MM-DD' en el rango [00:00, +1 día) en UTC."""
     try:
-        base = datetime.strptime(fecha_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", fecha_str):
+            raise ValueError()
+        base = datetime.strptime(fecha_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         raise HTTPException(status_code=422, detail="Fecha inválida (usa YYYY-MM-DD).")
     return base, base + timedelta(days=1)
@@ -311,18 +321,24 @@ def get_asistencia(
         )
         .all()
     )
-    presente_por_alumno = {r.practicante_id: bool(r.presente) for r in registros}
+    return _attendance_snapshot(aula_id, fecha, registros, db)
 
-    items = [
-        AsistenciaItemOut(
-            practicanteId=a.id,
-            practicanteNombre=f"{a.nombres} {a.apellidos}",
-            # Si aún no hay registro para ese día, se asume presente por defecto.
-            presente=presente_por_alumno.get(a.id, True),
-        )
-        for a in _alumnos_de_aula(aula_id, db)
-    ]
-    return AsistenciaSesionOut(aulaId=aula_id, fecha=fecha[:10], items=items)
+
+def _attendance_snapshot(aula_id, fecha, registros, db):
+    # La revisión incluye padrón y filas reales, también duplicadas o ya fuera del padrón.
+    alumnos = list({a.id: a for a in _alumnos_de_aula(aula_id, db) if a.role.value == "ALUMNO"}.values())
+    alumno_ids = {a.id for a in alumnos}
+    ordered = sorted(registros, key=lambda r: r.id)
+    present = {r.practicante_id: bool(r.presente) for r in ordered}
+    ids = [r.practicante_id for r in ordered if r.practicante_id in alumno_ids]
+    complete = bool(alumno_ids) and len(ids) == len(alumno_ids) and set(ids) == alumno_ids
+    state = "GUARDADO" if complete else "PARCIAL" if registros else "PROPUESTO"
+    fingerprint = {"aula": aula_id, "fecha": fecha, "padron": sorted(alumno_ids),
+                   "filas": [(r.id, r.practicante_id, r.presente) for r in ordered]}
+    revision = sha256(json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return AsistenciaSesionOut(aulaId=aula_id, fecha=fecha, estadoRegistro=state, revision=revision,
+        items=[AsistenciaItemOut(practicanteId=a.id, practicanteNombre=f"{a.nombres} {a.apellidos}",
+                                presente=present.get(a.id, True), registrado=a.id in present) for a in alumnos])
 
 
 @router.post("/aulas/{aula_id}/asistencia", response_model=AsistenciaSesionOut)
@@ -332,27 +348,40 @@ def guardar_asistencia(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Guarda (reemplaza) la asistencia del aula para una fecha."""
+    """Reemplaza el día de forma transaccional, con padrón y revisión comprobados."""
     _solo_profesor_o_admin(current_user)
-    _aula_del_profesor(aula_id, current_user, db)
-
+    aula = _aula_del_profesor(aula_id, current_user, db, lock=True)
     desde, hasta = _rango_dia(payload.fecha)
-    # Reemplaza los registros existentes de ese día para no duplicar.
-    db.query(RegistroAsistencia).filter(
-        RegistroAsistencia.aula_id == aula_id,
-        RegistroAsistencia.fecha >= desde,
-        RegistroAsistencia.fecha < hasta,
-    ).delete(synchronize_session=False)
-
+    if desde.date() > datetime.now(timezone(timedelta(hours=-5))).date():
+        raise HTTPException(422, "No se puede guardar asistencia futura.")
+    if aula.estado != AulaEstadoEnum.ACTIVA:
+        raise HTTPException(409, "El aula está concluida.")
+    current = get_asistencia(aula_id, payload.fecha, db, current_user)
+    received = [i.practicanteId for i in payload.items]
+    roster = {i.practicanteId for i in current.items}
+    if not roster or len(received) != len(roster) or set(received) != roster:
+        raise HTTPException(409, "El padrón cambió o la lista está incompleta. Consulta nuevamente.")
+    before = {i.practicanteId: i.presente for i in current.items}
+    after = {i.practicanteId: i.presente for i in payload.items}
+    # Repetir el mismo resultado no vuelve a escribir ni duplica la auditoría.
+    if current.estadoRegistro == "GUARDADO" and before == after:
+        return current
+    if payload.revision != current.revision:
+        raise HTTPException(409, "La asistencia cambió desde la consulta. Revisa la lista actual.")
+    previous_rows = db.query(RegistroAsistencia).filter(RegistroAsistencia.aula_id == aula_id,
+        RegistroAsistencia.fecha >= desde, RegistroAsistencia.fecha < hasta).all()
+    db.query(RegistroAsistencia).filter(RegistroAsistencia.aula_id == aula_id,
+        RegistroAsistencia.fecha >= desde, RegistroAsistencia.fecha < hasta,
+        RegistroAsistencia.practicante_id.in_(roster)).delete(synchronize_session="fetch")
     for item in payload.items:
-        db.add(
-            RegistroAsistencia(
-                practicante_id=item.practicanteId,
-                aula_id=aula_id,
-                fecha=desde,
-                presente=1 if item.presente else 0,
-            )
-        )
+        key = sha256(f"{aula_id}:{payload.fecha}:{item.practicanteId}".encode()).hexdigest()
+        db.add(RegistroAsistencia(id="as-" + key, practicante_id=item.practicanteId, aula_id=aula_id,
+                                 fecha=desde, presente=1 if item.presente else 0))
+    db.add(Auditoria(user_id=current_user.id, user_nombre=f"{current_user.nombres} {current_user.apellidos}"[:200],
+        accion="ASISTENCIA_ACADEMICA", detalle=json.dumps({"aulaId": aula_id, "fecha": payload.fecha,
+        "revisionAnterior": current.revision, "padronActual": sorted(roster), "conservadosFueraDelPadron": [r.id for r in previous_rows if r.practicante_id not in roster],
+        "antes": [{"id": r.id, "practicanteId": r.practicante_id, "presente": bool(r.presente)} for r in previous_rows if r.practicante_id in roster],
+        "despues": [{"practicanteId": i.practicanteId, "presente": i.presente} for i in payload.items]}, ensure_ascii=False)))
     db.commit()
     return get_asistencia(aula_id, payload.fecha, db, current_user)
 
