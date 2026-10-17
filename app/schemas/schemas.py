@@ -452,18 +452,44 @@ class MetaOut(BaseModel):
     fechaCreacion: str
 
 
-class CreateMetaRequest(BaseModel):
+class SolicitudContenido(BaseModel):
+    solicitudId: Optional[str] = Field(default=None, pattern=r"^[a-zA-Z0-9-]{16,80}$")
+
+    @field_validator("titulo", "mensaje", "texto", "descripcion", mode="before", check_fields=False)
+    @classmethod
+    def trim_content(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("El contenido no puede estar vacío.")
+        return value
+
+
+class CreateMetaRequest(SolicitudContenido):
     """Idéntico a CreateMetaPayload del frontend."""
 
     tipo: MetaTipo
-    cantidadObjetivo: int
-    descripcion: Optional[str] = None
+    cantidadObjetivo: StrictInt = Field(ge=1, le=1000000)
+    descripcion: Optional[str] = Field(default=None, max_length=2000)
 
 
 class RegistrarAvanceMetaRequest(BaseModel):
     """Idéntico a RegistrarAvanceMetaPayload del frontend."""
 
     cantidad: int
+
+
+class EstablecerAvanceMetaRequest(BaseModel):
+    cantidad: StrictInt = Field(ge=0, le=1000000)
+    anterior: StrictInt = Field(ge=0, le=1000000)
+    motivo: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("motivo")
+    @classmethod
+    def reason_required(cls, value):
+        if not value.strip():
+            raise ValueError("Describe la producción revisada.")
+        return value.strip()
 
 
 # ── Asistencia (soporte de HU-22) ─────────────────────────────────────────────
@@ -721,15 +747,10 @@ class AnuncioOut(BaseModel):
     fecha: str
 
 
-class CreateAnuncioRequest(BaseModel):
-    titulo: str
-    mensaje: str
-    fijado: bool = False
-
-    @field_validator("titulo", "mensaje", mode="before")
-    @classmethod
-    def strip_strings(cls, v: str) -> str:
-        return v.strip()
+class CreateAnuncioRequest(SolicitudContenido):
+    titulo: str = Field(min_length=1, max_length=200)
+    mensaje: str = Field(min_length=1, max_length=10000)
+    fijado: StrictBool = False
 
 
 # ── Comunicación: foros (HU-37) ───────────────────────────────────────────────
@@ -744,8 +765,8 @@ class ForoHiloOut(BaseModel):
     fecha: str
 
 
-class CreateHiloRequest(BaseModel):
-    titulo: str
+class CreateHiloRequest(SolicitudContenido):
+    titulo: str = Field(min_length=1, max_length=200)
 
 
 class ForoMensajeOut(BaseModel):
@@ -756,8 +777,8 @@ class ForoMensajeOut(BaseModel):
     fecha: str
 
 
-class CreateForoMensajeRequest(BaseModel):
-    texto: str
+class CreateForoMensajeRequest(SolicitudContenido):
+    texto: str = Field(min_length=1, max_length=10000)
 
 
 # ── Comunicación: mensajería directa (HU-38) ──────────────────────────────────
