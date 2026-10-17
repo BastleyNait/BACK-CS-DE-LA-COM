@@ -3,12 +3,15 @@ Gestión de aulas / clases / prácticas (HU-4).
 Rutas: /api/v1/aulas/*
 """
 
+import hashlib
+import uuid
+from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.models.models import Aula, AulaEstadoEnum, User
+from app.models.models import Auditoria, Aula, AulaEstadoEnum, RoleEnum, User
 from app.schemas.schemas import AulaOut, CreateAulaRequest
 
 router = APIRouter(prefix="/aulas", tags=["aulas"])
@@ -59,8 +62,11 @@ def list_aulas(
             .order_by(Aula.created_at.desc())
             .all()
         )
-    else:  # ADMIN
+    elif current_user.role.value == "ADMIN":
         aulas = db.query(Aula).order_by(Aula.created_at.desc()).all()
+
+    else:
+        raise HTTPException(403, "Sección para miembros del aula.")
 
     return [_aula_to_out(a) for a in aulas]
 
@@ -79,29 +85,38 @@ def create_aula(
     Equivale al mock: aulaService.create()
     Errores: 403 si es ALUMNO, 409 si el código ya existe.
     """
-    if current_user.role.value == "ALUMNO":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permisos para crear clases.",
-        )
-
+    if current_user.role.value not in {"ADMIN", "PROFESOR"}:
+        raise HTTPException(403, "Solo docencia o administración crea aulas.")
+    profesor_id = body.profesorId or (current_user.id if current_user.role.value == "PROFESOR" else None)
+    if not profesor_id:
+        raise HTTPException(422, "Selecciona un docente responsable.")
+    if current_user.role.value == "PROFESOR" and profesor_id != current_user.id:
+        raise HTTPException(403, "Solo puedes crear aulas a tu cargo.")
+    profesor = db.query(User).filter(User.id == profesor_id).populate_existing().with_for_update().first()
+    if not profesor or profesor.role != RoleEnum.PROFESOR:
+        raise HTTPException(422, "El responsable debe ser docente.")
     codigo = body.codigo.upper()
+    record_id = "a-" + (hashlib.sha256(f"{current_user.id}:{body.solicitudId}".encode()).hexdigest() if body.solicitudId else uuid.uuid4().hex)
+    def same(a):
+        return (a.nombre, a.codigo, a.descripcion, a.periodo, a.profesor_id) == (body.nombre, codigo, body.descripcion, body.periodo, profesor_id)
+    existing = db.get(Aula, record_id)
+    if existing:
+        if not same(existing):
+            raise HTTPException(409, "La solicitud ya se utilizó con otros datos.")
+        return _aula_to_out(existing)
     if db.query(Aula).filter(Aula.codigo == codigo).first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Ya existe una clase con el código {codigo}.",
-        )
-
-    aula = Aula(
-        nombre=body.nombre,
-        codigo=codigo,
-        descripcion=body.descripcion,
-        periodo=body.periodo,
-        profesor_id=current_user.id,
-        estado=AulaEstadoEnum.ACTIVA,
-        inscritos=0,
-    )
+        raise HTTPException(409, "El código de aula ya está en uso.")
+    aula = Aula(id=record_id, nombre=body.nombre, codigo=codigo, descripcion=body.descripcion, periodo=body.periodo,
+                profesor_id=profesor_id, estado=AulaEstadoEnum.ACTIVA, inscritos=0)
     db.add(aula)
-    db.commit()
-    db.refresh(aula)
+    db.add(Auditoria(user_id=current_user.id, user_nombre=f"{current_user.nombres} {current_user.apellidos}",
+                     accion="AULA_CREADA", detalle=f"{body.nombre} ({codigo}), periodo {body.periodo}; docente {profesor.nombres} {profesor.apellidos}"))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.get(Aula, record_id)
+        if existing and same(existing):
+            return _aula_to_out(existing)
+        raise HTTPException(409, "El código o la solicitud ya está en uso.") from None
     return _aula_to_out(aula)

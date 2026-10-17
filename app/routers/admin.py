@@ -3,6 +3,9 @@ Gestión de usuarios por el administrador (HU-12).
 Rutas: /api/v1/admin/*
 """
 
+import hashlib
+import json
+from sqlalchemy import func, text
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,9 +26,14 @@ from app.models.models import (
     RoleEnum,
     Tarea,
     User,
+    Supervisor,
+    RegistroHoras,
+    RegistroHorasEstadoEnum,
 )
 from app.schemas.schemas import (
     AsignarProfesorRequest,
+    CreateAulaRequest,
+    EstablecerMatriculaRequest,
     AuditoriaOut,
     AulaOut,
     MatriculaAlumnoOut,
@@ -71,6 +79,26 @@ def _to_out(u: User) -> UsuarioAdminOut:
     )
 
 
+@router.get("/capacidades")
+def capacidades(current_user: User = Depends(get_current_user)):
+    _solo_admin(current_user)
+    return {"versionAdministracion": 1}
+
+
+@router.get("/aulas", response_model=list[AulaOut])
+def list_aulas_admin(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _solo_admin(current_user)
+    counts = dict(db.query(Inscripcion.aula_id, func.count(func.distinct(Inscripcion.alumno_id))).group_by(Inscripcion.aula_id).all())
+    return [_aula_out(a).model_copy(update={"inscritos": counts.get(a.id, 0)}) for a in db.query(Aula).order_by(Aula.created_at.desc(), Aula.id).all()]
+
+
+@router.post("/aulas", response_model=AulaOut, status_code=201)
+def crear_aula_admin(payload: CreateAulaRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _solo_admin(current_user)
+    from app.routers.aulas import create_aula
+    return create_aula(payload, db, current_user)
+
+
 # ── GET /api/v1/admin/usuarios ────────────────────────────────────────────────
 
 
@@ -104,9 +132,25 @@ def update_rol(
             detail="No puedes cambiar tu propio rol.",
         )
 
-    usuario = db.query(User).filter(User.id == user_id).first()
+    # Serializa cambios de administradores y vuelve a comprobar al actor tras esperar.
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(current_schema()::text), 1501)"))
+    db.refresh(current_user)
+    _solo_admin(current_user)
+    usuario = db.query(User).filter(User.id == user_id).populate_existing().with_for_update().first()
     if usuario is None:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        raise HTTPException(404, "Usuario no encontrado.")
+    if usuario.role.value == payload.role:
+        return _to_out(usuario)
+    if usuario.role.value != payload.anterior:
+        raise HTTPException(409, "El rol cambió. Consulta el usuario actualizado.")
+    linked = (db.query(Aula.id).filter(Aula.profesor_id == user_id).first()
+        or db.query(Inscripcion.id).filter(Inscripcion.alumno_id == user_id).first()
+        or db.query(Practica.id).filter(Practica.practicante_id == user_id).first()
+        or db.query(Empresa.id).filter(Empresa.practicante_id == user_id).first()
+        or db.query(Supervisor.id).filter(Supervisor.user_id == user_id).first())
+    if linked:
+        raise HTTPException(409, "El usuario tiene asignaciones académicas. Resuélvelas antes de cambiar su rol.")
 
     rol_anterior = usuario.role.value
     usuario.role = RoleEnum(payload.role)
@@ -202,6 +246,10 @@ def cambiar_estado_aula(
     """Marca un aula como ACTIVA o CONCLUIDA (archivada)."""
     _solo_admin(current_user)
     aula = _get_aula(aula_id, db, lock=True)
+    if aula.estado.value == payload.estado:
+        return _aula_out(aula)
+    if aula.estado.value != payload.anterior:
+        raise HTTPException(409, "El estado del aula cambió. Consulta los datos actuales.")
     aula.estado = AulaEstadoEnum(payload.estado)
     _auditar(db, current_user, "ESTADO_AULA", f"{aula.nombre} → {payload.estado}")
     db.commit()
@@ -223,7 +271,11 @@ def asignar_profesor(
     _solo_admin(current_user)
     aula = _get_aula(aula_id, db, lock=True)
 
-    profesor = db.query(User).filter(User.id == payload.profesorId).first()
+    if aula.profesor_id == payload.profesorId:
+        return _aula_out(aula)
+    if aula.profesor_id != payload.anterior:
+        raise HTTPException(409, "El docente responsable cambió. Consulta el aula actual.")
+    profesor = db.query(User).filter(User.id == payload.profesorId).populate_existing().with_for_update().first()
     if profesor is None:
         raise HTTPException(status_code=404, detail="Profesor no encontrado.")
     if profesor.role != RoleEnum.PROFESOR:
@@ -265,6 +317,7 @@ def get_matriculas(
         .all()
     )
     return MatriculasOut(
+        revision=_roster_revision(db, aula),
         aulaId=aula.id,
         aulaNombre=aula.nombre,
         alumnos=[
@@ -279,60 +332,48 @@ def get_matriculas(
     )
 
 
-@router.post("/aulas/{aula_id}/matriculas", response_model=MatriculasOut)
-def matricular(
-    aula_id: str,
-    payload: MatricularRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Inscribe un alumno en el aula. Idempotente (409 si ya está inscrito)."""
-    _solo_admin(current_user)
+def _roster_revision(db, aula):
+    ids = sorted({r.alumno_id for r in db.query(Inscripcion).filter(Inscripcion.aula_id == aula.id).all()})
+    return hashlib.sha256(json.dumps([aula.id, aula.estado.value, ids], separators=(",", ":")).encode()).hexdigest()
+
+
+def _set_matricula(aula_id, alumno_id, desired, db, user, revision=None):
+    _solo_admin(user)
     aula = _get_aula(aula_id, db, lock=True)
-
-    alumno = db.query(User).filter(User.id == payload.alumnoId).first()
-    if alumno is None or alumno.role != RoleEnum.ALUMNO:
-        raise HTTPException(status_code=404, detail="Alumno no encontrado.")
-
-    ya = (
-        db.query(Inscripcion)
-        .filter(Inscripcion.aula_id == aula_id, Inscripcion.alumno_id == payload.alumnoId)
-        .first()
-    )
-    if ya:
-        raise HTTPException(status_code=409, detail="El alumno ya está matriculado.")
-
-    db.add(Inscripcion(alumno_id=payload.alumnoId, aula_id=aula_id, semanas_totales=16))
-    aula.inscritos = (aula.inscritos or 0) + 1
-    _auditar(db, current_user, "MATRICULA", f"{alumno.nombres} {alumno.apellidos} → {aula.nombre}")
+    alumno = db.query(User).filter(User.id == alumno_id).populate_existing().with_for_update().first()
+    if not alumno or alumno.role != RoleEnum.ALUMNO:
+        raise HTTPException(404, "Alumno no disponible.")
+    rows = db.query(Inscripcion).filter(Inscripcion.aula_id == aula_id, Inscripcion.alumno_id == alumno_id).all()
+    if bool(rows) == desired:
+        return get_matriculas(aula_id, db, user)
+    if aula.estado != AulaEstadoEnum.ACTIVA:
+        raise HTTPException(409, "Reactiva el aula antes de modificar sus matrículas.")
+    if revision is not None and revision != _roster_revision(db, aula):
+        raise HTTPException(409, "El padrón cambió. Consulta las matrículas actuales.")
+    if desired:
+        db.add(Inscripcion(alumno_id=alumno_id, aula_id=aula_id, semanas_totales=16))
+    else:
+        for row in rows: db.delete(row)
+    db.flush()
+    aula.inscritos = db.query(func.count(func.distinct(Inscripcion.alumno_id))).filter(Inscripcion.aula_id == aula_id).scalar()
+    _auditar(db, user, "MATRICULA" if desired else "RETIRO_MATRICULA", f"{alumno.nombres} {alumno.apellidos} {'→' if desired else '←'} {aula.nombre}")
     db.commit()
-    return get_matriculas(aula_id, db, current_user)
+    return get_matriculas(aula_id, db, user)
+
+
+@router.put("/aulas/{aula_id}/matriculas/{alumno_id}", response_model=MatriculasOut)
+def establecer_matricula(aula_id: str, alumno_id: str, payload: EstablecerMatriculaRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_matricula(aula_id, alumno_id, payload.inscrito, db, current_user, payload.revision)
+
+
+@router.post("/aulas/{aula_id}/matriculas", response_model=MatriculasOut)
+def matricular(aula_id: str, payload: MatricularRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_matricula(aula_id, payload.alumnoId, True, db, current_user)
 
 
 @router.delete("/aulas/{aula_id}/matriculas/{alumno_id}", response_model=MatriculasOut)
-def desmatricular(
-    aula_id: str,
-    alumno_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Retira la matrícula de un alumno del aula."""
-    _solo_admin(current_user)
-    aula = _get_aula(aula_id, db, lock=True)
-
-    ins = (
-        db.query(Inscripcion)
-        .filter(Inscripcion.aula_id == aula_id, Inscripcion.alumno_id == alumno_id)
-        .first()
-    )
-    if ins is None:
-        raise HTTPException(status_code=404, detail="El alumno no está matriculado.")
-
-    db.delete(ins)
-    aula.inscritos = max(0, (aula.inscritos or 0) - 1)
-    _auditar(db, current_user, "RETIRO_MATRICULA", f"{alumno_id} ← {aula.nombre}")
-    db.commit()
-    return get_matriculas(aula_id, db, current_user)
+def desmatricular(aula_id: str, alumno_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_matricula(aula_id, alumno_id, False, db, current_user)
 
 
 # ── HU-32 · Reportes institucionales ──────────────────────────────────────────
@@ -354,11 +395,9 @@ def reportes(
     practicas = db.query(Practica).all()
     en_curso = sum(1 for p in practicas if p.estado != PracticaEstadoEnum.CERRADA)
     cerradas = sum(1 for p in practicas if p.estado == PracticaEstadoEnum.CERRADA)
-    horas_promedio = (
-        round(sum(p.horas_acumuladas for p in practicas) / len(practicas), 1)
-        if practicas
-        else None
-    )
+    hours = dict(db.query(RegistroHoras.practica_id, func.sum(RegistroHoras.horas)).filter(RegistroHoras.estado_validacion == RegistroHorasEstadoEnum.VALIDADO).group_by(RegistroHoras.practica_id).all())
+    horas_promedio = round(sum(hours.get(p.id, 0) for p in practicas) / len(practicas), 1) if practicas else None
+    counts = dict(db.query(Inscripcion.aula_id, func.count(func.distinct(Inscripcion.alumno_id))).group_by(Inscripcion.aula_id).all())
 
     filas: list[ReporteAulaOut] = []
     for a in aulas:
@@ -387,7 +426,7 @@ def reportes(
                 if a.profesor
                 else "—",
                 estado=a.estado.value,
-                inscritos=a.inscritos,
+                inscritos=counts.get(a.id, 0),
                 promedioNotas=promedio_notas,
                 asistenciaPct=asistencia_pct,
             )

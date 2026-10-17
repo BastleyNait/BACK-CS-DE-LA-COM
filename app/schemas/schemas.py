@@ -68,17 +68,17 @@ class RecoverResponse(BaseModel):
 
 
 class CreateAulaRequest(BaseModel):
-    """Idéntico a CreateAulaPayload del frontend."""
-
-    nombre: str
-    codigo: str
-    descripcion: str
-    periodo: str
+    nombre: str = Field(min_length=1, max_length=200)
+    codigo: str = Field(min_length=2, max_length=50, pattern=r"^[A-Za-z0-9-]+$")
+    descripcion: str = Field(default="", max_length=4000)
+    periodo: str = Field(min_length=1, max_length=20)
+    profesorId: Optional[str] = None
+    solicitudId: Optional[str] = Field(default=None, pattern=r"^[a-zA-Z0-9-]{16,80}$")
 
     @field_validator("nombre", "codigo", "descripcion", "periodo", mode="before")
     @classmethod
-    def strip_strings(cls, v: str) -> str:
-        return v.strip()
+    def strip_strings(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class AulaOut(BaseModel):
@@ -155,6 +155,7 @@ class UsuarioAdminOut(BaseModel):
 
 class UpdateRolRequest(BaseModel):
     role: Role
+    anterior: Role
 
 
 # ── Tareas y entregas (HU-09/10) ────────────────────────────────────────────
@@ -675,10 +676,12 @@ class SeguimientoOut(BaseModel):
 
 class UpdateAulaEstadoRequest(BaseModel):
     estado: AulaEstado
+    anterior: AulaEstado
 
 
 class AsignarProfesorRequest(BaseModel):
     profesorId: str
+    anterior: str
 
 
 class MatriculaAlumnoOut(BaseModel):
@@ -689,6 +692,7 @@ class MatriculaAlumnoOut(BaseModel):
 
 
 class MatriculasOut(BaseModel):
+    revision: str
     aulaId: str
     aulaNombre: str
     alumnos: list[MatriculaAlumnoOut]
@@ -696,6 +700,11 @@ class MatriculasOut(BaseModel):
 
 class MatricularRequest(BaseModel):
     alumnoId: str
+
+
+class EstablecerMatriculaRequest(BaseModel):
+    inscrito: StrictBool
+    revision: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]+$")
 
 
 # ── Reportes institucionales (HU-32) ──────────────────────────────────────────

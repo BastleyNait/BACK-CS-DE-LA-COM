@@ -54,6 +54,8 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     Equivale al mock: authService.register()
     Errores: 409 si el correo ya existe.
     """
+    if body.role != "ALUMNO":
+        raise HTTPException(403, "El alta pública solo permite cuentas de alumno. Los roles privilegiados los asigna administración.")
     email = body.email.lower()
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(

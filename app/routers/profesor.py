@@ -28,6 +28,7 @@ from app.models.models import (
     Practica,
     PracticaEstadoEnum,
     RegistroAsistencia,
+    RegistroHorasEstadoEnum,
     Tarea,
     User,
 )
@@ -532,6 +533,12 @@ def libro_calificaciones(
     )
 
 
+@router.get("/seguimiento/capacidades")
+def capacidades_seguimiento(current_user: User = Depends(get_current_user)):
+    _solo_profesor_o_admin(current_user)
+    return {"versionSeguimiento": 1}
+
+
 # ── HU-28 · Seguimiento individual del practicante ────────────────────────────
 
 
@@ -558,6 +565,9 @@ def seguimiento_practicante(
         .filter(Inscripcion.aula_id == aula_id, Inscripcion.alumno_id == alumno_id)
         .first()
     )
+
+    if ins is None:
+        raise HTTPException(404, "El alumno no está matriculado en esta aula.")
 
     tareas = db.query(Tarea).filter(Tarea.aula_id == aula_id).order_by(Tarea.created_at.asc()).all()
     entregas_map: dict[str, Entrega] = {}
@@ -631,7 +641,7 @@ def seguimiento_practicante(
         empresaNombre=empresa_nombre,
         promedio=promedio,
         asistenciaPct=asistencia_pct,
-        horasAcumuladas=practica.horas_acumuladas if practica else 0,
+        horasAcumuladas=sum(r.horas for r in practica.registros_horas if r.estado_validacion == RegistroHorasEstadoEnum.VALIDADO) if practica else 0,
         horasMinimas=practica.horas_minimas if practica else 360,
         progreso=ins.progreso if ins else 0,
         estadoPractica=practica.estado.value if practica else None,
