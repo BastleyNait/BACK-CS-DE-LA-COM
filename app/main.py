@@ -19,7 +19,8 @@ from app.routers import (
 
 from app.db.session import engine, Base
 # Crear tablas si no existen al iniciar la aplicación (útil para serverless en Vercel)
-Base.metadata.create_all(bind=engine)
+if settings.AUTO_CREATE_TABLES:
+    Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="SSP — Sistema de Seguimiento de Practicantes",
@@ -56,3 +57,20 @@ app.include_router(comunicacion.router, prefix=API_PREFIX)
 @app.get("/", tags=["health"])
 def health_check():
     return {"status": "ok", "app": "SSP Backend"}
+
+
+if settings.APP_ENV in {"development", "test"}:
+    @app.get("/dev/ready", tags=["development"])
+    def test_readiness():
+        from fastapi import HTTPException
+        from sqlalchemy import text
+        from app.db.test_environment import check_test_target
+        try:
+            check_test_target(settings)
+            with engine.connect() as conn:
+                if conn.execute(text("select current_schema()")).scalar_one() != "ssp_test":
+                    raise ValueError("Esquema incorrecto.")
+                conn.execute(text("select 1 from users limit 1"))
+            return {"status": "ok", "environment": settings.APP_ENV, "schema": "ssp_test", "database": "reachable"}
+        except Exception:
+            raise HTTPException(status_code=503, detail="La base de prueba no esta preparada o no responde.") from None

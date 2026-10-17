@@ -19,3 +19,13 @@ __pycache__/
 
 # Duplicado temporal (no trackear)
 ssp-backend/
+
+# Entorno de prueba y herramientas locales
+!.env.test.example
+.local/
+.agents/
+.codex/
+AGENTS.md
+*.log
+uploads/*
+!uploads/.gitkeep

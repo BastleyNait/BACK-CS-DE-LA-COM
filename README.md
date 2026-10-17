@@ -1,3 +1,5 @@
+> Entorno aislado con Supabase y Python de Windows: [docs/ENTORNO-PRUEBAS.md](docs/ENTORNO-PRUEBAS.md). Usar estos pasos para desarrollo; no ejecutar la semilla historica contra produccion.
+
 # SSP Backend — FastAPI + PostgreSQL
 
 Backend del **Sistema de Seguimiento de Practicantes (SSP)** que reemplaza la

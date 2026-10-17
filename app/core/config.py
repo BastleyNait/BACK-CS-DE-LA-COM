@@ -1,7 +1,9 @@
 import json
 import os
+import re
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Literal
+from pydantic import SecretStr, field_validator
 
 
 class Settings(BaseSettings):
@@ -18,6 +20,20 @@ class Settings(BaseSettings):
     # no se define UPLOAD_DIR por env var, cae a /tmp/uploads en Vercel para
     # no romper con "Read-only file system" al subir un archivo.
     UPLOAD_DIR: str = "/tmp/uploads" if os.getenv("VERCEL") else "uploads"
+
+    # Valores optativos: los despliegues existentes conservan public y su arranque.
+    APP_ENV: Literal["production", "development", "test"] = "production"
+    DATABASE_SCHEMA: str = "public"
+    AUTO_CREATE_TABLES: bool = True
+    TEST_DATABASE_PROJECT_REF: str = ""
+    TEST_SEED_PASSWORD: SecretStr = SecretStr("")
+
+    @field_validator("DATABASE_SCHEMA")
+    @classmethod
+    def safe_schema(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value) or value.startswith("pg_"):
+            raise ValueError("DATABASE_SCHEMA no es un identificador permitido.")
+        return value
 
     class Config:
         env_file = ".env"
