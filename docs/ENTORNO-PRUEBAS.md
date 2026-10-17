@@ -57,10 +57,22 @@ Detener el Expo anterior en 5173. En otro PowerShell:
 
 ```powershell
 cd C:\proyectos\appSSP
-npm run web:pruebas
+npm run web
 ```
 
-El comando comprueba `/dev/ready` y configura EXPO_PUBLIC_API_URL solo para ese proceso. No cambia la URL predeterminada ni guarda credenciales en Expo. `npm run web` conserva el arranque habitual. Estos comandos usan localhost; acceso desde un teléfono requiere configurar direcciones de red por separado.
+`npm run web` y su alias `npm run web:pruebas` comprueban `/dev/ready`, rechazan otro servidor en 5173 y configuran EXPO_PUBLIC_API_URL local solo para ese proceso. Para abrir deliberadamente la API configurada en `.env.local`/el entorno (con el backend público anterior como valor de respaldo), detener el Expo anterior y usar `npm run web:configurado`. El login muestra el entorno elegido. Estos comandos usan localhost; acceso desde un teléfono requiere configurar direcciones de red por separado.
+
+Las tablas se consultan en el esquema **`ssp_test`** del proyecto de pruebas, no en `public`. Las cuentas de ingreso están en **`ssp_test.users`**, no en Supabase Auth. Para comprobarlo sin modificar datos, ejecutar en el editor SQL del proyecto correcto:
+
+```sql
+SELECT table_schema, table_name
+FROM information_schema.tables
+WHERE table_schema = 'ssp_test' AND table_type = 'BASE TABLE'
+ORDER BY table_name;
+SELECT count(*) AS cuentas_ssp FROM ssp_test.users;
+```
+
+La comprobación del 17 de octubre de 2026 encontró 21 tablas con RLS, 7 cuentas ficticias y cero tablas en `public`. El script de la app `npm run test:login:real` verifica en Chromium un rechazo 401, un ingreso 200 y el panel del alumno contra la API local real, sin respuestas simuladas ni nuevas escrituras académicas. Requiere Playwright y la contraseña local existente; no publica credenciales.
 
 ## Verificación y Git
 
