@@ -10,6 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.practice_access import require_practice, sync_hours
+from app.routers.practicas import _to_registro_out
+from app.schemas.schemas import RevisarHorasRequest, RegistroHorasOut
 from app.db.session import get_db
 from app.models.models import (
     Empresa,
@@ -232,3 +235,25 @@ def resumen_empresa(
         evaluacionesPendientes=evaluaciones_pendientes,
         cumplimientoPromedio=cumplimiento_promedio,
     )
+
+
+@router.put("/horas/{registro_id}", response_model=RegistroHorasOut)
+def revisar_horas(registro_id: str, payload: RevisarHorasRequest,
+                  db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Decisión del supervisor vinculado; repetición de la misma decisión es inocua."""
+    if current_user.role.value != "SUPERVISOR":
+        raise HTTPException(403, "Solo el supervisor vinculado puede revisar horas.")
+    practica_id = db.query(RegistroHoras.practica_id).filter(RegistroHoras.id == registro_id).scalar()
+    if practica_id is None:
+        raise HTTPException(404, "Registro no disponible.")
+    practica = require_practice(db, current_user, practica_id, lock=True)
+    registro = db.query(RegistroHoras).filter(RegistroHoras.id == registro_id).populate_existing().with_for_update().one()
+    decision = RegistroHorasEstadoEnum(payload.estadoValidacion)
+    if registro.estado_validacion == decision:
+        return _to_registro_out(registro)
+    if registro.estado_validacion != RegistroHorasEstadoEnum.PENDIENTE or practica.estado == PracticaEstadoEnum.CERRADA:
+        raise HTTPException(409, "El registro ya fue revisado o la práctica está cerrada.")
+    registro.estado_validacion = decision
+    sync_hours(db, practica)
+    db.commit()
+    return _to_registro_out(registro)

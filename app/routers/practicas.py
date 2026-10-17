@@ -5,12 +5,13 @@ Rutas: /api/v1/practicas/*
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time, date
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.practice_access import require_practice, visible_practices, sync_hours
 from app.db.session import get_db
 from app.models.models import (
     Aula,
@@ -18,6 +19,7 @@ from app.models.models import (
     Practica,
     PracticaEstadoEnum,
     RegistroHoras,
+    RegistroHorasEstadoEnum,
     Supervisor,
     User,
 )
@@ -34,6 +36,8 @@ router = APIRouter(prefix="/practicas", tags=["practicas"])
 
 
 def _to_practica_out(p: Practica) -> PracticaOut:
+    aprobadas = sum(r.horas for r in p.registros_horas if r.estado_validacion == RegistroHorasEstadoEnum.VALIDADO)
+    estado = p.estado if p.estado == PracticaEstadoEnum.CERRADA else (PracticaEstadoEnum.LISTA_PARA_CIERRE if aprobadas >= p.horas_minimas else PracticaEstadoEnum.EN_CURSO)
     return PracticaOut(
         id=p.id,
         practicanteId=p.practicante_id,
@@ -42,9 +46,9 @@ def _to_practica_out(p: Practica) -> PracticaOut:
         aulaNombre=p.aula.nombre,
         periodo=p.periodo,
         empresaId=p.empresa_id,
-        horasAcumuladas=p.horas_acumuladas,
+        horasAcumuladas=aprobadas,
         horasMinimas=p.horas_minimas,
-        estado=p.estado.value,
+        estado=estado.value,
         fechaInicio=p.fecha_inicio.isoformat() if p.fecha_inicio else "",
         fechaCierre=p.fecha_cierre.isoformat() if p.fecha_cierre else None,
         validadoPor=p.validado_por,
@@ -63,20 +67,15 @@ def _to_registro_out(r: RegistroHoras) -> RegistroHorasOut:
 
 
 def _practicas_visibles(db: Session, user: User) -> list[Practica]:
-    """Prácticas que el usuario puede ver según su rol."""
-    if user.role.value == "ALUMNO":
-        return (
-            db.query(Practica)
-            .filter(Practica.practicante_id == user.id)
-            .all()
-        )
-    if user.role.value == "PROFESOR":
-        aula_ids = [a.id for a in db.query(Aula).filter(Aula.profesor_id == user.id)]
-        return db.query(Practica).filter(Practica.aula_id.in_(aula_ids)).all()
-    return db.query(Practica).all()
+    return visible_practices(db, user).all()
 
 
 # ── GET /api/v1/practicas ─────────────────────────────────────────────────────
+
+
+@router.get("/capacidades")
+def capacidades(current_user: User = Depends(get_current_user)):
+    return {"versionHoras": 1}
 
 
 @router.get("", response_model=list[PracticaOut])
@@ -169,7 +168,7 @@ def historial(
     if current_user.role.value == "ALUMNO" and current_user.id != practicante_id:
         raise HTTPException(status_code=403, detail="Acceso restringido.")
     registros = (
-        db.query(Practica)
+        visible_practices(db, current_user)
         .filter(Practica.practicante_id == practicante_id)
         .all()
     )
@@ -187,6 +186,7 @@ def get_horas(
     current_user: User = Depends(get_current_user),
 ):
     """Bitácora de horas registradas para una práctica (HU-14)."""
+    require_practice(db, current_user, practica_id)
     registros = (
         db.query(RegistroHoras)
         .filter(RegistroHoras.practica_id == practica_id)
@@ -211,48 +211,42 @@ def registrar_horas(
     current_user: User = Depends(get_current_user),
 ):
     """Registra una nueva entrada de horas trabajadas (HU-14)."""
-    practica = db.query(Practica).filter(Practica.id == practica_id).first()
-    if practica is None:
-        raise HTTPException(status_code=404, detail="No se encontró la práctica.")
-    if practica.estado == PracticaEstadoEnum.CERRADA:
-        raise HTTPException(
-            status_code=409,
-            detail="Esta práctica ya fue cerrada y no admite más horas.",
-        )
-    if payload.horas <= 0:
-        raise HTTPException(
-            status_code=400, detail="Las horas deben ser un valor mayor a 0."
-        )
-
-    fecha = datetime.now(timezone.utc)
+    if current_user.role.value != "ALUMNO":
+        raise HTTPException(403, "Solo el alumno registra sus horas.")
+    practica = require_practice(db, current_user, practica_id, lock=True)
+    lima = timezone(timedelta(hours=-5))
+    day = datetime.now(lima).date()
     if payload.fecha:
         try:
-            fecha = datetime.fromisoformat(payload.fecha.replace("Z", "+00:00"))
+            if len(payload.fecha) == 10:
+                day = date.fromisoformat(payload.fecha)
+            else:
+                parsed = datetime.fromisoformat(payload.fecha.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError()
+                day = parsed.astimezone(lima).date()
         except ValueError:
-            pass
-
-    registro = RegistroHoras(
-        practica_id=practica_id,
-        fecha=fecha,
-        horas=payload.horas,
-        descripcion=payload.descripcion.strip(),
-    )
+            raise HTTPException(422, "Fecha inválida. Usa AAAA-MM-DD.")
+    if day > datetime.now(lima).date():
+        raise HTTPException(422, "No puedes registrar actividades futuras.")
+    fecha = datetime.combine(day, time(12), tzinfo=lima).astimezone(timezone.utc)
+    registro_id = "h-" + payload.solicitudId if payload.solicitudId else "h-" + uuid.uuid4().hex
+    existente = db.get(RegistroHoras, registro_id)
+    if existente:
+        existing_day = existente.fecha.replace(tzinfo=timezone.utc) if existente.fecha.tzinfo is None else existente.fecha
+        if (existente.practica_id != practica_id or existente.horas != payload.horas
+                or existente.descripcion != payload.descripcion or existing_day != fecha):
+            raise HTTPException(409, "La solicitud ya se usó con otros datos.")
+        return RegistrarHorasResponse(practica=_to_practica_out(practica), registro=_to_registro_out(existente))
+    if practica.estado == PracticaEstadoEnum.CERRADA:
+        raise HTTPException(409, "La práctica está cerrada.")
+    registro = RegistroHoras(id=registro_id, practica_id=practica_id, fecha=fecha,
+                             horas=payload.horas, descripcion=payload.descripcion,
+                             estado_validacion=RegistroHorasEstadoEnum.PENDIENTE)
     db.add(registro)
-
-    practica.horas_acumuladas += payload.horas
-    if (
-        practica.estado == PracticaEstadoEnum.EN_CURSO
-        and practica.horas_acumuladas >= practica.horas_minimas
-    ):
-        practica.estado = PracticaEstadoEnum.LISTA_PARA_CIERRE
-
+    sync_hours(db, practica)
     db.commit()
-    db.refresh(registro)
-    db.refresh(practica)
-    return RegistrarHorasResponse(
-        practica=_to_practica_out(practica),
-        registro=_to_registro_out(registro),
-    )
+    return RegistrarHorasResponse(practica=_to_practica_out(practica), registro=_to_registro_out(registro))
 
 
 # ── POST /api/v1/practicas/{practica_id}/cerrar ───────────────────────────────
@@ -265,14 +259,10 @@ def cerrar_practica(
     current_user: User = Depends(get_current_user),
 ):
     """Cierra y valida formalmente una práctica (HU-15). Solo docente/admin."""
-    if current_user.role.value == "ALUMNO":
-        raise HTTPException(
-            status_code=403,
-            detail="Solo un docente o administrador puede validar el cierre.",
-        )
-    practica = db.query(Practica).filter(Practica.id == practica_id).first()
-    if practica is None:
-        raise HTTPException(status_code=404, detail="No se encontró la práctica.")
+    if current_user.role.value not in {"PROFESOR", "ADMIN"}:
+        raise HTTPException(403, "Solo el docente responsable o administración puede cerrar la práctica.")
+    practica = require_practice(db, current_user, practica_id, lock=True)
+    sync_hours(db, practica)
     if practica.estado == PracticaEstadoEnum.CERRADA:
         raise HTTPException(
             status_code=409, detail="Esta práctica ya se encuentra cerrada."
@@ -313,9 +303,7 @@ def generar_reporte(
     current_user: User = Depends(get_current_user),
 ):
     """Genera el reporte final consolidado de una práctica (HU-16)."""
-    practica = db.query(Practica).filter(Practica.id == practica_id).first()
-    if practica is None:
-        raise HTTPException(status_code=404, detail="No se encontró la práctica.")
+    practica = require_practice(db, current_user, practica_id)
 
     empresa = (
         db.query(Empresa).filter(Empresa.id == practica.empresa_id).first()

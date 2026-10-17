@@ -6,7 +6,7 @@ Reflejan exactamente los tipos definidos en src/types/index.ts del frontend.
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, StrictInt, field_validator
 
 Role = Literal["ADMIN", "PROFESOR", "ALUMNO", "SUPERVISOR"]
 AulaEstado = Literal["ACTIVA", "CONCLUIDA"]
@@ -330,9 +330,22 @@ class RegistroHorasOut(BaseModel):
 class RegistrarHorasRequest(BaseModel):
     """Idéntico a RegistrarHorasPayload del frontend."""
 
-    horas: int
-    descripcion: str
+    horas: StrictInt = Field(ge=1, le=24)
+    descripcion: str = Field(min_length=1, max_length=2000)
     fecha: Optional[str] = None
+    solicitudId: Optional[str] = Field(default=None, pattern=r"^[a-zA-Z0-9-]{16,80}$")
+
+    @field_validator("descripcion")
+    @classmethod
+    def description_required(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Describe la actividad realizada.")
+        return value
+
+
+class RevisarHorasRequest(BaseModel):
+    estadoValidacion: Literal["VALIDADO", "RECHAZADO"]
 
 
 class RegistrarHorasResponse(BaseModel):
