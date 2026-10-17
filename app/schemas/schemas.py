@@ -802,6 +802,9 @@ class ContactoOut(BaseModel):
 
 
 class MensajeDirectoOut(BaseModel):
+    aulaId: str
+    destinatarioId: str
+    leido: bool
     id: str
     remitenteId: str
     remitenteNombre: str
@@ -810,5 +813,16 @@ class MensajeDirectoOut(BaseModel):
     fecha: str
 
 
-class EnviarMensajeRequest(BaseModel):
-    texto: str
+class EnviarMensajeRequest(SolicitudContenido):
+    texto: str = Field(min_length=1, max_length=10000)
+
+
+class LeerMensajesRequest(BaseModel):
+    mensajeIds: list[str] = Field(min_length=1, max_length=200)
+
+    @field_validator("mensajeIds")
+    @classmethod
+    def distinct_ids(cls, values):
+        if len(set(values)) != len(values) or any(not v.strip() for v in values):
+            raise ValueError("Selecciona mensajes distintos y válidos.")
+        return values
