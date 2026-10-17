@@ -41,6 +41,16 @@ La semilla agrega seis cuentas (`admin`, `profesor`, `alumno`, `supervisor`, `pr
 
 `create_all` prepara esta base vacía; no sustituye migraciones Alembic para futuros cambios de estructura. La conexión actual usa el propietario PostgreSQL durante este entorno de desarrollo; antes de un piloto se debe separar el rol de migraciones del rol de ejecución con privilegios mínimos.
 
+## Actualizar una base de pruebas existente
+
+El incremento 13 añade revisiones, observaciones e historial de horas. Ejecutar una vez antes de usar la API actualizada:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.db.migrate_hours_test
+```
+
+Es aditivo e idempotente, limitado al proyecto y esquema autorizados; no vuelve a cargar la semilla. Ver [CIRCUITO-HORAS.md](CIRCUITO-HORAS.md). `create_all` no añade columnas a tablas existentes.
+
 ## Conectar la app
 
 Detener el Expo anterior en 5173. En otro PowerShell:

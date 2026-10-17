@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.core.practice_access import require_practice, sync_hours
-from app.routers.practicas import _to_registro_out
+from app.core.hours import to_record as _to_registro_out, track_change
 from app.schemas.schemas import RevisarHorasRequest, RegistroHorasOut
 from app.db.session import get_db
 from app.models.models import (
@@ -249,11 +249,16 @@ def revisar_horas(registro_id: str, payload: RevisarHorasRequest,
     practica = require_practice(db, current_user, practica_id, lock=True)
     registro = db.query(RegistroHoras).filter(RegistroHoras.id == registro_id).populate_existing().with_for_update().one()
     decision = RegistroHorasEstadoEnum(payload.estadoValidacion)
-    if registro.estado_validacion == decision:
+    if (registro.revision == payload.revision + 1 and registro.estado_validacion == decision
+            and registro.observacion == payload.observacion):
         return _to_registro_out(registro)
-    if registro.estado_validacion != RegistroHorasEstadoEnum.PENDIENTE or practica.estado == PracticaEstadoEnum.CERRADA:
+    if registro.revision != payload.revision or registro.estado_validacion != RegistroHorasEstadoEnum.PENDIENTE or practica.estado == PracticaEstadoEnum.CERRADA:
         raise HTTPException(409, "El registro ya fue revisado o la práctica está cerrada.")
+    antes = _to_registro_out(registro)
     registro.estado_validacion = decision
+    registro.observacion = payload.observacion
+    registro.revision += 1
+    track_change(db, current_user, registro, "VALIDACION" if decision == RegistroHorasEstadoEnum.VALIDADO else "RECHAZO", antes)
     sync_hours(db, practica)
     db.commit()
     return _to_registro_out(registro)

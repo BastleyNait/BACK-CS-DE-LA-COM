@@ -9,6 +9,8 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
+    CheckConstraint,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -312,6 +314,10 @@ class RegistroHoras(Base):
         default=RegistroHorasEstadoEnum.PENDIENTE,
     )
 
+    revision = Column(Integer, nullable=False, default=0, server_default="0")
+    observacion = Column(Text, nullable=False, default="", server_default="")
+    __table_args__ = (CheckConstraint("revision >= 0", name="ck_horas_revision"),)
+
     practica = relationship("Practica", back_populates="registros_horas")
 
 
@@ -488,3 +494,18 @@ class Evaluacion(Base):
 
     practica = relationship("Practica")
     empresa = relationship("Empresa")
+
+
+class HistorialHoras(Base):
+    """Instantáneas inmutables de cada cambio; no se reconstruyen desde auditoría."""
+    __tablename__ = "historial_horas"
+    __table_args__ = (UniqueConstraint("registro_id", "revision", name="uq_historial_horas_revision"),)
+    id = Column(String, primary_key=True, default=lambda: "hh-" + uuid.uuid4().hex)
+    registro_id = Column(String, ForeignKey("registro_horas.id"), nullable=False)
+    revision = Column(Integer, nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    user_nombre = Column(String(200), nullable=False)
+    accion = Column(String(20), nullable=False)
+    antes = Column(Text, nullable=True)
+    despues = Column(Text, nullable=False)
+    fecha = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(), nullable=False)

@@ -348,6 +348,8 @@ class RegistroHorasOut(BaseModel):
     horas: int
     descripcion: str
     estadoValidacion: RegistroHorasEstado
+    revision: int
+    observacion: str
 
 
 class RegistrarHorasRequest(BaseModel):
@@ -367,8 +369,32 @@ class RegistrarHorasRequest(BaseModel):
         return value
 
 
+class CorregirHorasRequest(RegistrarHorasRequest):
+    revision: StrictInt = Field(ge=0)
+    fecha: str
+
+
 class RevisarHorasRequest(BaseModel):
     estadoValidacion: Literal["VALIDADO", "RECHAZADO"]
+    revision: StrictInt = Field(ge=0)
+    observacion: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def reason_required(self):
+        self.observacion = self.observacion.strip()
+        if self.estadoValidacion == "RECHAZADO" and not self.observacion:
+            raise ValueError("Explica qué debe corregir el alumno.")
+        return self
+
+
+class HistorialHorasOut(BaseModel):
+    id: str
+    revision: int
+    userNombre: str
+    accion: str
+    fecha: str
+    antes: Optional[RegistroHorasOut]
+    despues: RegistroHorasOut
 
 
 class RegistrarHorasResponse(BaseModel):

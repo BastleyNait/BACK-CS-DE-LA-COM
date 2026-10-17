@@ -5,12 +5,14 @@ Rutas: /api/v1/practicas/*
 """
 
 import uuid
-from datetime import datetime, timezone, timedelta, time, date
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.hours import activity_date, to_record as _to_registro_out, track_change
+import json
 from app.core.practice_access import require_practice, visible_practices, sync_hours
 from app.db.session import get_db
 from app.models.models import (
@@ -19,12 +21,15 @@ from app.models.models import (
     Practica,
     PracticaEstadoEnum,
     RegistroHoras,
+    HistorialHoras,
     RegistroHorasEstadoEnum,
     Supervisor,
     User,
 )
 from app.schemas.schemas import (
     PracticaOut,
+    CorregirHorasRequest,
+    HistorialHorasOut,
     RegistrarHorasRequest,
     RegistrarHorasResponse,
     RegistroHorasOut,
@@ -55,17 +60,6 @@ def _to_practica_out(p: Practica) -> PracticaOut:
     )
 
 
-def _to_registro_out(r: RegistroHoras) -> RegistroHorasOut:
-    return RegistroHorasOut(
-        id=r.id,
-        practicaId=r.practica_id,
-        fecha=r.fecha.isoformat() if r.fecha else "",
-        horas=r.horas,
-        descripcion=r.descripcion,
-        estadoValidacion=r.estado_validacion.value,
-    )
-
-
 def _practicas_visibles(db: Session, user: User) -> list[Practica]:
     return visible_practices(db, user).all()
 
@@ -75,7 +69,7 @@ def _practicas_visibles(db: Session, user: User) -> list[Practica]:
 
 @router.get("/capacidades")
 def capacidades(current_user: User = Depends(get_current_user)):
-    return {"versionHoras": 1}
+    return {"versionHoras": 2}
 
 
 @router.get("", response_model=list[PracticaOut])
@@ -214,22 +208,7 @@ def registrar_horas(
     if current_user.role.value != "ALUMNO":
         raise HTTPException(403, "Solo el alumno registra sus horas.")
     practica = require_practice(db, current_user, practica_id, lock=True)
-    lima = timezone(timedelta(hours=-5))
-    day = datetime.now(lima).date()
-    if payload.fecha:
-        try:
-            if len(payload.fecha) == 10:
-                day = date.fromisoformat(payload.fecha)
-            else:
-                parsed = datetime.fromisoformat(payload.fecha.replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    raise ValueError()
-                day = parsed.astimezone(lima).date()
-        except ValueError:
-            raise HTTPException(422, "Fecha inválida. Usa AAAA-MM-DD.")
-    if day > datetime.now(lima).date():
-        raise HTTPException(422, "No puedes registrar actividades futuras.")
-    fecha = datetime.combine(day, time(12), tzinfo=lima).astimezone(timezone.utc)
+    fecha = activity_date(payload.fecha)
     registro_id = "h-" + payload.solicitudId if payload.solicitudId else "h-" + uuid.uuid4().hex
     existente = db.get(RegistroHoras, registro_id)
     if existente:
@@ -245,8 +224,50 @@ def registrar_horas(
                              estado_validacion=RegistroHorasEstadoEnum.PENDIENTE)
     db.add(registro)
     sync_hours(db, practica)
+    track_change(db, current_user, registro, "REGISTRO")
     db.commit()
     return RegistrarHorasResponse(practica=_to_practica_out(practica), registro=_to_registro_out(registro))
+
+
+@router.put("/{practica_id}/horas/{registro_id}", response_model=RegistroHorasOut)
+def corregir_horas(practica_id: str, registro_id: str, payload: CorregirHorasRequest,
+                   db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role.value != "ALUMNO":
+        raise HTTPException(403, "Solo el alumno corrige sus horas.")
+    fecha = activity_date(payload.fecha)
+    practica = require_practice(db, current_user, practica_id, lock=True)
+    registro = db.query(RegistroHoras).filter(RegistroHoras.id == registro_id, RegistroHoras.practica_id == practica_id).populate_existing().with_for_update().first()
+    if registro is None:
+        raise HTTPException(404, "Registro no disponible.")
+    actual_fecha = registro.fecha.replace(tzinfo=timezone.utc) if registro.fecha.tzinfo is None else registro.fecha
+    if (registro.revision == payload.revision + 1 and registro.estado_validacion == RegistroHorasEstadoEnum.PENDIENTE
+            and registro.horas == payload.horas and registro.descripcion == payload.descripcion and actual_fecha == fecha):
+        return _to_registro_out(registro)
+    if (registro.revision != payload.revision or registro.estado_validacion != RegistroHorasEstadoEnum.RECHAZADO
+            or practica.estado == PracticaEstadoEnum.CERRADA):
+        raise HTTPException(409, "La actividad cambió, ya fue reenviada o la práctica está cerrada. Consulta la bitácora.")
+    if registro.horas == payload.horas and registro.descripcion == payload.descripcion and actual_fecha == fecha:
+        raise HTTPException(422, "Modifica la actividad antes de reenviarla.")
+    antes = _to_registro_out(registro)
+    registro.fecha, registro.horas, registro.descripcion = fecha, payload.horas, payload.descripcion
+    registro.estado_validacion = RegistroHorasEstadoEnum.PENDIENTE
+    registro.observacion = ""
+    registro.revision += 1
+    track_change(db, current_user, registro, "CORRECCION", antes)
+    sync_hours(db, practica)
+    db.commit()
+    return _to_registro_out(registro)
+
+
+@router.get("/{practica_id}/horas/{registro_id}/historial", response_model=list[HistorialHorasOut])
+def historial_horas(practica_id: str, registro_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_practice(db, current_user, practica_id)
+    registro = db.query(RegistroHoras).filter(RegistroHoras.id == registro_id, RegistroHoras.practica_id == practica_id).first()
+    if registro is None:
+        raise HTTPException(404, "Registro no disponible.")
+    return [HistorialHorasOut(id=e.id, revision=e.revision, userNombre=e.user_nombre, accion=e.accion,
+        fecha=e.fecha.isoformat(), antes=json.loads(e.antes) if e.antes else None, despues=json.loads(e.despues))
+        for e in db.query(HistorialHoras).filter(HistorialHoras.registro_id == registro_id).order_by(HistorialHoras.revision).all()]
 
 
 # ── POST /api/v1/practicas/{practica_id}/cerrar ───────────────────────────────
