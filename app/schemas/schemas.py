@@ -6,7 +6,7 @@ Reflejan exactamente los tipos definidos en src/types/index.ts del frontend.
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, StrictInt, field_validator
+from pydantic import AwareDatetime, BaseModel, EmailStr, Field, StrictInt, field_validator, model_validator
 
 Role = Literal["ADMIN", "PROFESOR", "ALUMNO", "SUPERVISOR"]
 AulaEstado = Literal["ACTIVA", "CONCLUIDA"]
@@ -185,10 +185,33 @@ class TareaAlumnoOut(BaseModel):
     entrega: Optional[EntregaOut]
 
 
+class CreateTareaRequest(BaseModel):
+    titulo: str = Field(min_length=1, max_length=200)
+    descripcion: str = Field(min_length=1, max_length=6000)
+    fechaLimite: Optional[AwareDatetime] = None
+    solicitudId: str = Field(pattern=r"^[a-zA-Z0-9-]{16,80}$")
+
+    @field_validator("titulo", "descripcion")
+    @classmethod
+    def nonblank(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Completa el título y las instrucciones.")
+        return value
+
+
 class SubmitEntregaRequest(BaseModel):
-    descripcion: str = ""
-    comentario: str = ""
+    descripcion: str = Field(default="", max_length=6000)
+    comentario: str = Field(default="", max_length=2000)
     archivoId: Optional[str] = None
+
+    @model_validator(mode="after")
+    def content_required(self):
+        self.descripcion = self.descripcion.strip()
+        self.comentario = self.comentario.strip()
+        if not self.descripcion and not self.archivoId:
+            raise ValueError("Escribe tu respuesta antes de entregar.")
+        return self
 
 
 class DetalleCalificacionOut(BaseModel):

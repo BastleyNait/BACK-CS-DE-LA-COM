@@ -5,6 +5,7 @@ Rutas: /api/v1/alumno/aulas/{aula_id}/tareas/*
 """
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -13,6 +14,8 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.models import (
     Archivo,
+    Aula,
+    AulaEstadoEnum,
     Entrega,
     EntregaEstadoEnum,
     Inscripcion,
@@ -21,6 +24,7 @@ from app.models.models import (
 )
 from app.schemas.schemas import (
     CalificacionesOut,
+    CreateTareaRequest,
     DetalleCalificacionOut,
     EntregaOut,
     SubmitEntregaRequest,
@@ -128,30 +132,28 @@ def submit_entrega(
     _solo_alumno(current_user)
     _verificar_inscripcion(aula_id, current_user.id, db)
 
-    tarea = db.query(Tarea).filter(Tarea.id == tarea_id, Tarea.aula_id == aula_id).first()
+    # Todas las entregas de una tarea se serializan antes de comprobar duplicados.
+    tarea = db.query(Tarea).filter(Tarea.id == tarea_id, Tarea.aula_id == aula_id).populate_existing().with_for_update().first()
     if tarea is None:
-        raise HTTPException(status_code=404, detail="Tarea no encontrada.")
-
-    ya_existe = (
-        db.query(Entrega)
-        .filter(Entrega.tarea_id == tarea_id, Entrega.alumno_id == current_user.id)
-        .first()
-    )
+        raise HTTPException(404, "Tarea no encontrada.")
+    ya_existe = db.query(Entrega).filter(Entrega.tarea_id == tarea_id, Entrega.alumno_id == current_user.id).first()
     if ya_existe:
-        raise HTTPException(status_code=409, detail="Ya entregaste esta tarea.")
-
+        if (ya_existe.descripcion, ya_existe.comentario, ya_existe.archivo_id) != (payload.descripcion, payload.comentario, payload.archivoId):
+            raise HTTPException(409, "Ya existe una entrega con otros datos.")
+        return _tarea_to_out(tarea, ya_existe)
+    if tarea.aula.estado != AulaEstadoEnum.ACTIVA:
+        raise HTTPException(409, "El aula está concluida.")
+    if tarea.fecha_limite and _utc(tarea.fecha_limite) < datetime.now(timezone.utc):
+        raise HTTPException(422, "El plazo de entrega ya terminó.")
     if payload.archivoId:
-        archivo = db.query(Archivo).filter(Archivo.id == payload.archivoId).first()
+        archivo = db.query(Archivo).filter(Archivo.id == payload.archivoId, Archivo.aula_id == aula_id, Archivo.subido_por_id == current_user.id).first()
         if archivo is None:
-            raise HTTPException(status_code=404, detail="Archivo no encontrado.")
-
+            raise HTTPException(404, "Archivo no disponible para esta entrega.")
     entrega = Entrega(
-        tarea_id=tarea_id,
-        alumno_id=current_user.id,
-        descripcion=payload.descripcion,
-        comentario=payload.comentario,
-        archivo_id=payload.archivoId,
-        estado=EntregaEstadoEnum.ENTREGADA,
+        id="ent-" + sha256(f"{tarea_id}:{current_user.id}".encode()).hexdigest(),
+        tarea_id=tarea_id, alumno_id=current_user.id,
+        descripcion=payload.descripcion, comentario=payload.comentario,
+        archivo_id=payload.archivoId, estado=EntregaEstadoEnum.ENTREGADA,
         created_at=datetime.now(timezone.utc),
     )
     db.add(entrega)
@@ -214,3 +216,53 @@ def get_calificaciones(
         tareasEntregadas=len(entregas_por_tarea),
         detalle=detalle,
     )
+
+
+def _utc(value):
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _aula_docente(aula_id, user, db, lock=False):
+    if user.role.value not in {"PROFESOR", "ADMIN"}:
+        raise HTTPException(403, "Solo el docente puede gestionar tareas.")
+    query = db.query(Aula).filter(Aula.id == aula_id)
+    if user.role.value == "PROFESOR":
+        query = query.filter(Aula.profesor_id == user.id)
+    if lock:
+        query = query.populate_existing().with_for_update()
+    aula = query.first()
+    if aula is None:
+        raise HTTPException(404, "Aula no disponible para tu cuenta.")
+    return aula
+
+
+@router.get("/tareas/capacidades")
+def capacidades_tareas(current_user: User = Depends(get_current_user)):
+    return {"versionTareas": 1, "entregaTexto": True}
+
+
+@router.get("/profesor/aulas/{aula_id}/tareas", response_model=list[TareaAlumnoOut])
+def list_tareas_docente(aula_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _aula_docente(aula_id, current_user, db)
+    return [_tarea_to_out(t, None) for t in db.query(Tarea).filter(Tarea.aula_id == aula_id).order_by(Tarea.created_at.desc()).all()]
+
+
+@router.post("/profesor/aulas/{aula_id}/tareas", response_model=TareaAlumnoOut, status_code=201)
+def create_tarea(aula_id: str, payload: CreateTareaRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    aula = _aula_docente(aula_id, current_user, db, lock=True)
+    task_id = "t-" + payload.solicitudId
+    existing = db.get(Tarea, task_id)
+    if existing:
+        saved_deadline = _utc(existing.fecha_limite) if existing.fecha_limite else None
+        if (existing.aula_id, existing.titulo, existing.descripcion, saved_deadline) != (aula_id, payload.titulo, payload.descripcion, payload.fechaLimite):
+            raise HTTPException(409, "La solicitud ya se utilizó con otros datos.")
+        return _tarea_to_out(existing, None)
+    if aula.estado != AulaEstadoEnum.ACTIVA:
+        raise HTTPException(409, "El aula está concluida.")
+    if payload.fechaLimite and payload.fechaLimite <= datetime.now(timezone.utc):
+        raise HTTPException(422, "La fecha límite debe ser futura.")
+    task = Tarea(id=task_id, aula_id=aula_id, titulo=payload.titulo, descripcion=payload.descripcion, fecha_limite=payload.fechaLimite)
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return _tarea_to_out(task, None)
