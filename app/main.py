@@ -10,6 +10,7 @@ from app.routers import (
     auth,
     comunicacion,
     empresa,
+    expedientes,
     metas,
     notificaciones,
     practicas,
@@ -48,6 +49,7 @@ app.include_router(tareas.router, prefix=API_PREFIX)
 app.include_router(profesor.router, prefix=API_PREFIX)
 app.include_router(admin.router, prefix=API_PREFIX)
 app.include_router(empresa.router, prefix=API_PREFIX)
+app.include_router(expedientes.router, prefix=API_PREFIX)
 app.include_router(practicas.router, prefix=API_PREFIX)
 app.include_router(notificaciones.router, prefix=API_PREFIX)
 app.include_router(metas.router, prefix=API_PREFIX)

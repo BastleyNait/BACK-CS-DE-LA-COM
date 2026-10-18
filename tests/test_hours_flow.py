@@ -6,7 +6,9 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.session import Base
-from app.models.models import User, RoleEnum, Aula, Empresa, Supervisor, Practica, RegistroHoras, HistorialHoras, Auditoria, PracticaEstadoEnum
+from app.models.models import User, RoleEnum, Aula, Empresa, Supervisor, Practica, RegistroHoras, HistorialHoras, Auditoria, PracticaEstadoEnum, Inscripcion
+from app.routers.expedientes import guardar_requisitos, guardar_evaluacion, cerrar_expediente, get_expediente
+from app.schemas.expediente import RequisitosRequest, EvaluacionRequest, CerrarExpedienteRequest
 from app.routers.practicas import registrar_horas, get_horas, cerrar_practica, historial, generar_reporte, corregir_horas, historial_horas
 from app.routers.empresa import revisar_horas
 from app.schemas.schemas import RegistrarHorasRequest, RevisarHorasRequest, CorregirHorasRequest
@@ -46,13 +48,18 @@ class HoursFlowTests(unittest.TestCase):
         created = self.submit()
         self.assertEqual(created.practica.horasAcumuladas, 0)
         self.assertEqual(created.practica.estado, "EN_CURSO")
-        self.expect_status(422, cerrar_practica, "p1", self.db, self.users["teacher"])
+        self.expect_status(409, cerrar_practica, "p1", self.db, self.users["teacher"])
         payload = RevisarHorasRequest(estadoValidacion="VALIDADO", revision=0)
         for _ in range(2):
             result = revisar_horas(created.registro.id, payload, self.db, self.users["supervisor"])
             self.assertEqual(result.estadoValidacion, "VALIDADO")
         self.assertEqual(self.db.get(Practica, "p1").horas_acumuladas, 2)
-        self.assertEqual(cerrar_practica("p1", self.db, self.users["teacher"]).estado, "CERRADA")
+        self.db.add(Inscripcion(aula_id="a1", alumno_id="student"))
+        self.db.commit()
+        guardar_requisitos("p1", RequisitosRequest(revision=0, tareas=[], metas=[], motivo="Práctica ficticia sin tareas ni metas"), self.db, self.users["teacher"])
+        guardar_evaluacion("p1", EvaluacionRequest(revision=0, desempeno="Actividades de prueba revisadas", fortalezas="Buen trabajo", mejoras="Continuar mejorando", conclusion="FAVORABLE", conformidad=True), self.db, self.users["supervisor"])
+        data = get_expediente("p1", self.db, self.users["teacher"])
+        self.assertTrue(cerrar_expediente("p1", CerrarExpedienteRequest(revision=data['revision'], motivo="Cierre ficticio revisado"), self.db, self.users["teacher"])['cerrado'])
         self.expect_status(409, self.submit, "unit-000000000002")
 
     def test_registration_is_idempotent_and_detects_changed_payload(self):

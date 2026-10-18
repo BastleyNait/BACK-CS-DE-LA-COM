@@ -491,9 +491,20 @@ class Evaluacion(Base):
         Enum(EvaluacionEstadoEnum), nullable=False, default=EvaluacionEstadoEnum.PENDIENTE
     )
     fecha_limite = Column(DateTime(timezone=True), nullable=True)
+    contenido = Column(Text, nullable=True)
 
     practica = relationship("Practica")
     empresa = relationship("Empresa")
+
+
+class ExpedientePractica(Base):
+    """Requisitos explícitos y copia inmutable del expediente al cerrar."""
+    __tablename__ = "expedientes_practicas"
+    practica_id = Column(String, ForeignKey("practicas.id"), primary_key=True)
+    revision = Column(Integer, nullable=False, default=0, server_default="0")
+    requisitos = Column(Text, nullable=True)
+    cierre = Column(Text, nullable=True)
+    __table_args__ = (CheckConstraint("revision >= 0", name="ck_expediente_revision"),)
 
 
 class HistorialHoras(Base):

@@ -19,6 +19,8 @@ from app.models.models import (
     Entrega,
     EntregaEstadoEnum,
     Inscripcion,
+    Practica,
+    PracticaEstadoEnum,
     Tarea,
     User,
 )
@@ -141,6 +143,9 @@ def submit_entrega(
         if (ya_existe.descripcion, ya_existe.comentario, ya_existe.archivo_id) != (payload.descripcion, payload.comentario, payload.archivoId):
             raise HTTPException(409, "Ya existe una entrega con otros datos.")
         return _tarea_to_out(tarea, ya_existe)
+    practica = db.query(Practica).filter(Practica.aula_id == aula_id, Practica.practicante_id == current_user.id).order_by(Practica.id).populate_existing().with_for_update().all()
+    if any(p.estado == PracticaEstadoEnum.CERRADA for p in practica):
+        raise HTTPException(409, "La práctica está cerrada; no admite nuevas entregas.")
     if tarea.aula.estado != AulaEstadoEnum.ACTIVA:
         raise HTTPException(409, "El aula está concluida.")
     if tarea.fecha_limite and _utc(tarea.fecha_limite) < datetime.now(timezone.utc):

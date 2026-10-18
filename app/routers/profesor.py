@@ -449,6 +449,10 @@ def calificar_entrega(
     if tarea is not None:
         _aula_del_profesor(tarea.aula_id, current_user, db)
 
+    practicas = db.query(Practica).filter(Practica.aula_id == tarea.aula_id, Practica.practicante_id == entrega.alumno_id).order_by(Practica.id).populate_existing().with_for_update().all() if tarea else []
+    if any(p.estado == PracticaEstadoEnum.CERRADA for p in practicas):
+        raise HTTPException(409, "La práctica está cerrada; sus notas están conservadas en el expediente.")
+    entrega = db.query(Entrega).filter(Entrega.id == entrega_id).populate_existing().with_for_update().one()
     entrega.nota = payload.nota
     entrega.retroalimentacion = payload.retroalimentacion
     entrega.estado = EntregaEstadoEnum.CALIFICADA

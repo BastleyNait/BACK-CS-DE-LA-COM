@@ -218,9 +218,9 @@ def resumen_empresa(
         if empresa_ids
         else []
     )
-    evaluaciones_pendientes = len(
-        [e for e in evaluaciones if e.estado == EvaluacionEstadoEnum.PENDIENTE]
-    )
+    import json
+    completas = {e.practica_id for e in evaluaciones if e.contenido and json.loads(e.contenido).get("supervisorId") == current_user.id}
+    evaluaciones_pendientes = sum(p.id not in completas for p in activas)
 
     cumplimiento_promedio = None
     if practicas:

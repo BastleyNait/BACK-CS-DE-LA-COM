@@ -279,35 +279,11 @@ def cerrar_practica(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Cierra y valida formalmente una práctica (HU-15). Solo docente/admin."""
+    """La ruta anterior no permite omitir la revisión del expediente."""
     if current_user.role.value not in {"PROFESOR", "ADMIN"}:
         raise HTTPException(403, "Solo el docente responsable o administración puede cerrar la práctica.")
-    practica = require_practice(db, current_user, practica_id, lock=True)
-    sync_hours(db, practica)
-    if practica.estado == PracticaEstadoEnum.CERRADA:
-        raise HTTPException(
-            status_code=409, detail="Esta práctica ya se encuentra cerrada."
-        )
-    if practica.horas_acumuladas < practica.horas_minimas:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Aún no cumple el mínimo de horas "
-                f"({practica.horas_acumuladas}/{practica.horas_minimas})."
-            ),
-        )
-    if not practica.empresa_id:
-        raise HTTPException(
-            status_code=422,
-            detail="El practicante no ha registrado su empresa de prácticas.",
-        )
-
-    practica.estado = PracticaEstadoEnum.CERRADA
-    practica.fecha_cierre = datetime.now(timezone.utc)
-    practica.validado_por = f"{current_user.nombres} {current_user.apellidos}"
-    db.commit()
-    db.refresh(practica)
-    return _to_practica_out(practica)
+    require_practice(db, current_user, practica_id)
+    raise HTTPException(409, "Abre el expediente y confirma el cierre con sus requisitos actualizados.")
 
 
 # ── POST /api/v1/practicas/{practica_id}/reporte ──────────────────────────────
@@ -326,71 +302,9 @@ def generar_reporte(
     """Genera el reporte final consolidado de una práctica (HU-16)."""
     practica = require_practice(db, current_user, practica_id)
 
-    empresa = (
-        db.query(Empresa).filter(Empresa.id == practica.empresa_id).first()
-        if practica.empresa_id
-        else None
-    )
-    supervisor = (
-        db.query(Supervisor).filter(Supervisor.empresa_id == empresa.id).first()
-        if empresa
-        else None
-    )
-    horas = (
-        db.query(RegistroHoras)
-        .filter(RegistroHoras.practica_id == practica_id)
-        .all()
-    )
-    horas.sort(key=lambda r: r.fecha or datetime.min, reverse=True)
-
-    cerrada = practica.estado == PracticaEstadoEnum.CERRADA
-    lineas = [
-        "REPORTE FINAL DE PRÁCTICAS PRE-PROFESIONALES",
-        "Escuela Profesional de Ciencias de la Comunicación — UNSA",
-        "",
-        f"Practicante: {practica.practicante.nombres} {practica.practicante.apellidos}",
-        f"Aula / práctica: {practica.aula.nombre} ({practica.periodo})",
-        f"Estado: {'Cerrada y validada' if cerrada else 'En curso'}",
-        (
-            f"Horas acumuladas: {practica.horas_acumuladas} / "
-            f"{practica.horas_minimas} (mín. reglamentario RCU 0501-2020)"
-        ),
-        "",
-        (
-            f"Empresa / centro de prácticas: "
-            f"{empresa.razon_social if empresa else 'No registrada'}"
-        ),
-    ]
-    if empresa:
-        lineas.append(f"RUC: {empresa.ruc} — {empresa.direccion}")
-    if supervisor:
-        lineas.append(
-            f"Supervisor externo: {supervisor.nombres} {supervisor.apellidos} "
-            f"({supervisor.cargo}) — {supervisor.email}"
-        )
-    else:
-        lineas.append("Supervisor externo: No registrado")
-    lineas += [
-        "",
-        f"Bitácora de horas ({len(horas)} registro(s)):",
-        *[
-            f"  • {_fmt_fecha(h.fecha)} — {h.horas}h — {h.descripcion}"
-            for h in horas
-        ],
-        "",
-        (
-            f"Validado por: {practica.validado_por} el {_fmt_fecha(practica.fecha_cierre)}"
-            if practica.validado_por
-            else "Pendiente de validación docente."
-        ),
-        "",
-        (
-            f"Generado por: {current_user.nombres} {current_user.apellidos} "
-            f"el {_fmt_fecha(datetime.now(timezone.utc))}"
-        ),
-    ]
-
-    contenido = "\n".join(lineas)
+    from app.core.expediente import build
+    from app.core.expediente_pdf import document_lines
+    contenido = "\n".join(text for _, text in document_lines(build(db, practica)))
     return ReporteFinalOut(
         id=f"r-{uuid.uuid4().hex[:10]}",
         practicaId=practica_id,
