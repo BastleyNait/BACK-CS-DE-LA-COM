@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.routers import (
     admin,
+    asignaciones,
     alumno,
     archivos,
     aulas,
@@ -36,12 +37,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 API_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(asignaciones.router, prefix=API_PREFIX)
 app.include_router(aulas.router, prefix=API_PREFIX)
 app.include_router(alumno.router, prefix=API_PREFIX)
 app.include_router(archivos.router, prefix=API_PREFIX)

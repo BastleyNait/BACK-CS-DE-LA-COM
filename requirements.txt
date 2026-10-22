@@ -11,3 +11,5 @@ pydantic-settings==2.6.1
 alembic==1.14.0
 python-multipart==0.0.20
 reportlab==4.5.1
+google-auth==2.62.0
+requests==2.34.2

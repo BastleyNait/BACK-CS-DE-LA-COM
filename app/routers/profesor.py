@@ -392,6 +392,7 @@ def guardar_asistencia(
 
 def _entrega_prof_out(e: Entrega) -> EntregaProfesorOut:
     return EntregaProfesorOut(
+        revision=max((v.revision for v in e.versiones), default=0),
         id=e.id,
         tareaId=e.tarea_id,
         tareaTitulo=e.tarea.titulo if e.tarea else "",
@@ -453,6 +454,9 @@ def calificar_entrega(
     if any(p.estado == PracticaEstadoEnum.CERRADA for p in practicas):
         raise HTTPException(409, "La práctica está cerrada; sus notas están conservadas en el expediente.")
     entrega = db.query(Entrega).filter(Entrega.id == entrega_id).populate_existing().with_for_update().one()
+    revision = max((v.revision for v in entrega.versiones), default=0)
+    if (payload.revisionEntrega is None and revision > 0) or (payload.revisionEntrega is not None and payload.revisionEntrega != revision):
+        raise HTTPException(409, "El alumno reemplazó su entrega. Consulta la versión actual antes de calificar.")
     entrega.nota = payload.nota
     entrega.retroalimentacion = payload.retroalimentacion
     entrega.estado = EntregaEstadoEnum.CALIFICADA

@@ -1,0 +1,19 @@
+# Acceso y base funcional · incremento 19
+
+La app mantiene Expo → FastAPI → PostgreSQL. Google aporta identidad, no permisos académicos. `/auth/capacidades` informa si Google y SMTP están configurados; `/auth/me` devuelve el perfil vigente.
+
+Google: `GOOGLE_CLIENT_IDS` admite un CSV de audiencias Web autorizadas. `POST /auth/google` recibe `idToken`; verifica Google, audiencia, emisor, expiración, email verificado y `hd=unsa.edu.pe`. Vincula `sub` a una cuenta; una cuenta nueva solo recibe ALUMNO. La primera vinculación con un correo SSP existente exige `passwordSsp` correcto (428 si falta, 401 si no coincide); no conecta cuentas solo por coincidencia de correo. No guarda el ID token de Google ni usa Supabase Auth. Las credenciales OAuth y la prueba real siguen pendientes.
+
+Recuperación: SMTP STARTTLS, puerto 587, `SMTP_HOST`, `SMTP_FROM`, `SMTP_USER`/`SMTP_PASSWORD` si el proveedor los exige. Sin SMTP, `/auth/recover` responde 503. Con SMTP responde uniformemente, sin confirmar si existe el correo. Código aleatorio de un uso, guardado como SHA-256 y con 20 minutos de vigencia. `/auth/reset` cambia la contraseña e incrementa la versión de sesión; `/auth/me` y las demás rutas rechazan versiones anteriores. El código se pega en la pantalla de recuperación de la app. No se ha enviado correo real.
+
+Administración: `/admin/asignaciones`, `POST /admin/supervisores`, `POST /admin/practicas`, `PUT /admin/centros/{id}/supervisor`. Exigen ADMIN, registran auditoría y serializan con el bloqueo administrativo por esquema. La práctica requiere matrícula vigente, centro del alumno y meta explícita de horas; solo una abierta. Reasignar revoca acceso previo y no modifica expedientes cerrados. Una cuenta de supervisor admite varios centros.
+
+Documentos: tabla privada `contenidos_archivos` conserva los bytes, SHA-256 y FK al metadato. PDF/DOCX/ZIP de hasta 10 MB; 100 MB por cuenta. No se escribe al disco temporal y no hay URL pública. Carga multipart exige `solicitudId`; su clave se deriva también del usuario. Reintento con bytes/nombre distintos da 409. El alumno solo lista/descarga archivos propios y materiales de profesor/admin; el acceso al aula se revalida. Eliminar solo una carga propia sin referencias actuales o históricas. Los archivos anteriores que solo estaban en disco no se importan automáticamente.
+
+Tareas: capacidades conservan `versionTareas=1` y agregan `archivosPrivados`, `versionEntregas=1`, `edicionPlazos`. PUT de entregas exige revisión y motivo; mantiene versiones y adjuntos anteriores, rechaza calificados, vencidos y prácticas cerradas. PUT docente de tarea conserva historial de instrucciones/plazo y exige revisión/motivo. Una ampliación afecta toda la tarea, sin prórroga individual. Calificar exige la revisión vigente cuando hubo reemplazos; clientes antiguos sin revisión solo pueden calificar la versión inicial.
+
+Migración: `python -m app.db.migrate_access_test`, limitada al proyecto autorizado y `ssp_test`, añade seis tablas con RLS y sin privilegios PUBLIC/anon/authenticated. Retira la unicidad de `supervisores.user_id` conservando su índice. No reinicializa datos ni vuelve a aplicar migraciones anteriores. Se aplicó durante este incremento.
+
+16 pruebas nuevas aisladas y 8 pruebas de expediente pasaron en Windows. El alcance académico se verifica con SQLite; la consulta real usa cuentas ficticias, sin altas ni cierre. Google y correo se simulan solo en pruebas unitarias; no se presentan como integrados con cuentas reales. La privacidad de una carga se fija al subirla y no cambia cuando su autor cambia de rol.
+
+Para Android: `scripts/iniciar-pruebas.ps1 -Lan` enlaza a 0.0.0.0 y permite el origen LAN de Expo únicamente en development/test. La app usa la IP Windows, no localhost, para llegar a esta API. Sin `-Lan` se conserva el enlace a 127.0.0.1. No despliega producción.

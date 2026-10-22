@@ -88,6 +88,10 @@ def get_supervisor(
     current_user: User = Depends(get_current_user),
 ):
     """Supervisor registrado para la empresa indicada, o null si no existe."""
+    empresa = db.get(Empresa, empresa_id)
+    if not empresa or not (current_user.role.value == "ADMIN" or empresa.practicante_id == current_user.id or
+            db.query(Supervisor).filter(Supervisor.empresa_id == empresa_id, Supervisor.user_id == current_user.id).first()):
+        raise HTTPException(404, "Centro no disponible para tu cuenta.")
     supervisor = (
         db.query(Supervisor).filter(Supervisor.empresa_id == empresa_id).first()
     )
@@ -151,7 +155,7 @@ def register_supervisor(
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if empresa is None:
         raise HTTPException(status_code=404, detail="Empresa no encontrada.")
-    if empresa.practicante_id != current_user.id and current_user.role.value == "ALUMNO":
+    if current_user.role.value != "ALUMNO" or empresa.practicante_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo el practicante dueño puede registrar el supervisor.",

@@ -6,6 +6,8 @@ Rutas: /api/v1/alumno/aulas/{aula_id}/tareas/*
 
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
+from pydantic import Field, StrictInt
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -23,6 +25,8 @@ from app.models.models import (
     PracticaEstadoEnum,
     Tarea,
     User,
+    VersionEntrega,
+    CambioTarea,
 )
 from app.schemas.schemas import (
     CalificacionesOut,
@@ -59,6 +63,7 @@ def _verificar_inscripcion(aula_id: str, alumno_id: str, db: Session) -> None:
 
 def _entrega_to_out(e: Entrega) -> EntregaOut:
     return EntregaOut(
+        revision=max((v.revision for v in e.versiones), default=0),
         id=e.id,
         tareaId=e.tarea_id,
         alumnoId=e.alumno_id,
@@ -74,6 +79,7 @@ def _entrega_to_out(e: Entrega) -> EntregaOut:
 
 def _tarea_to_out(t: Tarea, entrega: Entrega | None) -> TareaAlumnoOut:
     return TareaAlumnoOut(
+        revision=max((v.revision for v in t.cambios), default=0),
         id=t.id,
         aulaId=t.aula_id,
         titulo=t.titulo,
@@ -151,7 +157,7 @@ def submit_entrega(
     if tarea.fecha_limite and _utc(tarea.fecha_limite) < datetime.now(timezone.utc):
         raise HTTPException(422, "El plazo de entrega ya terminó.")
     if payload.archivoId:
-        archivo = db.query(Archivo).filter(Archivo.id == payload.archivoId, Archivo.aula_id == aula_id, Archivo.subido_por_id == current_user.id).first()
+        archivo = db.query(Archivo).filter(Archivo.id == payload.archivoId, Archivo.aula_id == aula_id, Archivo.subido_por_id == current_user.id).with_for_update().first()
         if archivo is None:
             raise HTTPException(404, "Archivo no disponible para esta entrega.")
     entrega = Entrega(
@@ -162,6 +168,8 @@ def submit_entrega(
         created_at=datetime.now(timezone.utc),
     )
     db.add(entrega)
+    db.flush()
+    guardar_version(entrega, 0, "Entrega inicial")
     db.commit()
     db.refresh(entrega)
     return _tarea_to_out(tarea, entrega)
@@ -243,7 +251,7 @@ def _aula_docente(aula_id, user, db, lock=False):
 
 @router.get("/tareas/capacidades")
 def capacidades_tareas(current_user: User = Depends(get_current_user)):
-    return {"versionTareas": 1, "entregaTexto": True}
+    return {"versionTareas": 1, "entregaTexto": True, "archivosPrivados": True, "versionEntregas": 1, "edicionPlazos": True}
 
 
 @router.get("/profesor/aulas/{aula_id}/tareas", response_model=list[TareaAlumnoOut])
@@ -271,3 +279,94 @@ def create_tarea(aula_id: str, payload: CreateTareaRequest, db: Session = Depend
     db.commit()
     db.refresh(task)
     return _tarea_to_out(task, None)
+
+
+def guardar_version(entrega, revision, motivo):
+    contenido = _entrega_to_out(entrega).model_dump()
+    contenido["revision"] = revision
+    entrega.versiones.append(VersionEntrega(id=f"{entrega.id}-v{revision}", entrega_id=entrega.id,
+        revision=revision, archivo_id=entrega.archivo_id, contenido=json.dumps(contenido, ensure_ascii=False), motivo=motivo))
+
+
+class ReemplazarEntregaRequest(SubmitEntregaRequest):
+    revision: StrictInt = Field(ge=0)
+    motivo: str = Field(min_length=5, max_length=1000)
+
+
+@router.put("/alumno/aulas/{aula_id}/tareas/{tarea_id}/entregas", response_model=TareaAlumnoOut)
+def reemplazar_entrega(aula_id: str, tarea_id: str, payload: ReemplazarEntregaRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _solo_alumno(current_user)
+    _verificar_inscripcion(aula_id, current_user.id, db)
+    task = db.query(Tarea).filter(Tarea.id == tarea_id, Tarea.aula_id == aula_id).populate_existing().with_for_update().first()
+    if not task: raise HTTPException(404, "Tarea no disponible.")
+    practices = db.query(Practica).filter(Practica.aula_id == aula_id, Practica.practicante_id == current_user.id).order_by(Practica.id).populate_existing().with_for_update().all()
+    entrega = db.query(Entrega).filter(Entrega.tarea_id == task.id, Entrega.alumno_id == current_user.id).populate_existing().with_for_update().first()
+    if not entrega: raise HTTPException(404, "No hay una entrega que reemplazar.")
+    revision = max((v.revision for v in entrega.versiones), default=0)
+    desired = (payload.descripcion, payload.comentario, payload.archivoId)
+    actual = (entrega.descripcion, entrega.comentario, entrega.archivo_id)
+    if revision == payload.revision + 1 and desired == actual:
+        return _tarea_to_out(task, entrega)
+    if any(p.estado == PracticaEstadoEnum.CERRADA for p in practices) or task.aula.estado != AulaEstadoEnum.ACTIVA:
+        raise HTTPException(409, "La práctica o el aula están cerradas.")
+    if revision != payload.revision:
+        raise HTTPException(409, "La entrega cambió. Consulta su versión actual.")
+    if entrega.estado == EntregaEstadoEnum.CALIFICADA:
+        raise HTTPException(409, "La entrega ya está calificada; conserva su contenido y nota.")
+    if task.fecha_limite and _utc(task.fecha_limite) < datetime.now(timezone.utc):
+        raise HTTPException(422, "El plazo terminó. Solicita al docente una ampliación del plazo de la tarea.")
+    if desired == actual: raise HTTPException(422, "Modifica el contenido o el archivo antes de reemplazar.")
+    if payload.archivoId and not db.query(Archivo).filter(Archivo.id == payload.archivoId, Archivo.aula_id == aula_id, Archivo.subido_por_id == current_user.id).with_for_update().first():
+        raise HTTPException(404, "El archivo no pertenece a esta cuenta y aula.")
+    if not entrega.versiones: guardar_version(entrega, 0, "Versión inicial conservada antes del reemplazo")
+    entrega.descripcion, entrega.comentario, entrega.archivo_id = desired
+    entrega.created_at = datetime.now(timezone.utc)
+    guardar_version(entrega, revision + 1, payload.motivo.strip())
+    from app.routers.admin import _auditar
+    _auditar(db, current_user, "REEMPLAZAR_ENTREGA", f"Entrega {entrega.id}; versión {revision + 1}. {payload.motivo.strip()}")
+    db.commit()
+    return _tarea_to_out(task, entrega)
+
+
+class EditarTareaRequest(CreateTareaRequest):
+    revision: StrictInt = Field(ge=0)
+    motivo: str = Field(min_length=5, max_length=1000)
+
+
+@router.put("/profesor/aulas/{aula_id}/tareas/{tarea_id}", response_model=TareaAlumnoOut)
+def editar_tarea(aula_id: str, tarea_id: str, payload: EditarTareaRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    aula = _aula_docente(aula_id, current_user, db, lock=True)
+    task = db.query(Tarea).filter(Tarea.id == tarea_id, Tarea.aula_id == aula_id).populate_existing().with_for_update().first()
+    if not task: raise HTTPException(404, "Tarea no disponible.")
+    revision = max((v.revision for v in task.cambios), default=0)
+    desired = (payload.titulo, payload.descripcion, payload.fechaLimite)
+    actual = (task.titulo, task.descripcion, _utc(task.fecha_limite) if task.fecha_limite else None)
+    if revision == payload.revision + 1 and desired == actual:
+        return _tarea_to_out(task, None)
+    if aula.estado != AulaEstadoEnum.ACTIVA: raise HTTPException(409, "El aula está concluida.")
+    if revision != payload.revision: raise HTTPException(409, "La tarea cambió. Consulta la versión actual.")
+    if payload.fechaLimite and payload.fechaLimite <= datetime.now(timezone.utc): raise HTTPException(422, "El nuevo plazo debe ser futuro.")
+    if actual == desired: raise HTTPException(422, "Modifica las instrucciones o el plazo.")
+    before = _tarea_to_out(task, None).model_dump()
+    task.titulo, task.descripcion, task.fecha_limite = desired
+    task.cambios.append(CambioTarea(id=f"{task.id}-v{revision + 1}", tarea_id=task.id, revision=revision + 1,
+        contenido=json.dumps({"antes": before, "despues": {"titulo": task.titulo, "descripcion": task.descripcion, "fechaLimite": task.fecha_limite.isoformat() if task.fecha_limite else None}}, ensure_ascii=False),
+        user_id=current_user.id, motivo=payload.motivo.strip()))
+    from app.routers.admin import _auditar
+    _auditar(db, current_user, "EDITAR_TAREA", f"Tarea {task.id}; revisión {revision + 1}. {payload.motivo.strip()}")
+    db.commit()
+    return _tarea_to_out(task, None)
+
+
+@router.get("/aulas/{aula_id}/tareas/{tarea_id}/entregas/{alumno_id}/historial")
+def historial_entrega(aula_id: str, tarea_id: str, alumno_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role.value == "ALUMNO":
+        _verificar_inscripcion(aula_id, current_user.id, db)
+        if alumno_id != current_user.id: raise HTTPException(404, "Entrega no disponible.")
+    else: _aula_docente(aula_id, current_user, db)
+    task = db.query(Tarea).filter(Tarea.id == tarea_id, Tarea.aula_id == aula_id).first()
+    if not task: raise HTTPException(404, "Tarea no disponible.")
+    entrega = db.query(Entrega).filter(Entrega.tarea_id == task.id, Entrega.alumno_id == alumno_id).first()
+    if not entrega: return []
+    if not entrega.versiones: return [{"revision": 0, "contenido": _entrega_to_out(entrega).model_dump(), "motivo": "Entrega original"}]
+    return [{"revision": v.revision, "contenido": json.loads(v.contenido), "motivo": v.motivo} for v in sorted(entrega.versiones, key=lambda v: v.revision)]

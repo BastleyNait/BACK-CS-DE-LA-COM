@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     AUTO_CREATE_TABLES: bool = True
     TEST_DATABASE_PROJECT_REF: str = ""
     TEST_SEED_PASSWORD: SecretStr = SecretStr("")
+    GOOGLE_CLIENT_IDS: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: SecretStr = SecretStr("")
+    SMTP_FROM: str = ""
+    DEV_LAN_HOST: str = ""
 
     @field_validator("DATABASE_SCHEMA")
     @classmethod
@@ -46,10 +53,16 @@ class Settings(BaseSettings):
             return []
         if s.startswith("["):
             try:
-                return json.loads(s)
+                origins = json.loads(s)
             except Exception:
-                pass
-        return [origin.strip() for origin in s.split(",") if origin.strip()]
+                origins = []
+        else:
+            origins = [origin.strip() for origin in s.split(",") if origin.strip()]
+        if self.APP_ENV in {"development", "test"} and self.DEV_LAN_HOST:
+            import ipaddress
+            host = str(ipaddress.IPv4Address(self.DEV_LAN_HOST))
+            origins.append(f"http://{host}:5173")
+        return origins
 
 
 settings = Settings()

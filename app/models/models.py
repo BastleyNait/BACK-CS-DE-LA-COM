@@ -7,6 +7,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -91,6 +92,28 @@ class User(Base):
     aulas = relationship("Aula", back_populates="profesor")
 
 
+class IdentidadGoogle(Base):
+    __tablename__ = "identidades_google"
+    subject = Column(String(255), primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SeguridadCuenta(Base):
+    __tablename__ = "seguridad_cuentas"
+    user_id = Column(String, ForeignKey("users.id"), primary_key=True)
+    version = Column(Integer, nullable=False, default=0)
+
+
+class RecuperacionCuenta(Base):
+    __tablename__ = "recuperaciones_cuentas"
+    digest = Column(String(64), primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    vence = Column(DateTime(timezone=True), nullable=False)
+    usada = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Aula(Base):
     __tablename__ = "aulas"
 
@@ -168,6 +191,7 @@ class Tarea(Base):
 
     aula = relationship("Aula")
     entregas = relationship("Entrega", back_populates="tarea")
+    cambios = relationship("CambioTarea")
 
 
 class Entrega(Base):
@@ -197,6 +221,39 @@ class Entrega(Base):
     tarea = relationship("Tarea", back_populates="entregas")
     alumno = relationship("User", foreign_keys=[alumno_id])
     archivo = relationship("Archivo")
+    versiones = relationship("VersionEntrega")
+
+
+class ContenidoArchivo(Base):
+    __tablename__ = "contenidos_archivos"
+    archivo_id = Column(String, ForeignKey("archivos.id"), primary_key=True)
+    datos = Column(LargeBinary, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    material = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class VersionEntrega(Base):
+    __tablename__ = "versiones_entregas"
+    id = Column(String, primary_key=True)
+    entrega_id = Column(String, ForeignKey("entregas.id"), nullable=False, index=True)
+    revision = Column(Integer, nullable=False)
+    archivo_id = Column(String, ForeignKey("archivos.id"), nullable=True, index=True)
+    contenido = Column(Text, nullable=False)
+    motivo = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("entrega_id", "revision", name="uq_version_entrega"),)
+
+
+class CambioTarea(Base):
+    __tablename__ = "cambios_tareas"
+    id = Column(String, primary_key=True)
+    tarea_id = Column(String, ForeignKey("tareas.id"), nullable=False, index=True)
+    revision = Column(Integer, nullable=False)
+    contenido = Column(Text, nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    motivo = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("tarea_id", "revision", name="uq_cambio_tarea"),)
 
 
 class ActividadReciente(Base):
@@ -250,7 +307,7 @@ class Supervisor(Base):
         String, ForeignKey("empresas.id"), nullable=False, unique=True, index=True
     )
     # Vincula este contacto con una cuenta de login (rol SUPERVISOR, HU-24).
-    user_id = Column(String, ForeignKey("users.id"), nullable=True, unique=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     nombres = Column(String(100), nullable=False)
     apellidos = Column(String(100), nullable=False)
     cargo = Column(String(120), nullable=False, default="")

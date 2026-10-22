@@ -162,6 +162,7 @@ class UpdateRolRequest(BaseModel):
 
 
 class EntregaOut(BaseModel):
+    revision: int = 0
     id: str
     tareaId: str
     alumnoId: str
@@ -178,6 +179,7 @@ class TareaAlumnoOut(BaseModel):
     """Tarea vista desde el alumno, incluyendo su entrega si ya existe."""
 
     id: str
+    revision: int = 0
     aulaId: str
     titulo: str
     descripcion: str
@@ -590,6 +592,7 @@ class GuardarAsistenciaRequest(BaseModel):
 
 
 class EntregaProfesorOut(BaseModel):
+    revision: int = 0
     """Entrega vista por el profesor, con datos del alumno y la tarea."""
 
     id: str
@@ -607,6 +610,7 @@ class EntregaProfesorOut(BaseModel):
 
 
 class CalificarEntregaRequest(BaseModel):
+    revisionEntrega: Optional[StrictInt] = Field(default=None, ge=0)
     nota: int
     retroalimentacion: str = ""
 
