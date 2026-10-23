@@ -22,6 +22,13 @@ def get_expediente(practica_id: str, db: Session = Depends(get_db), current_user
     return build(db, require_practice(db, current_user, practica_id))
 
 
+@router.get("/{practica_id}/resumen")
+def get_student_summary(practica_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role.value != "ALUMNO":
+        raise HTTPException(403, "Este resumen corresponde al recorrido del alumno.")
+    return build(db, require_practice(db, current_user, practica_id), compact=True)
+
+
 @router.put("/{practica_id}/requisitos")
 def guardar_requisitos(practica_id: str, payload: RequisitosRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     practica = editable(db, current_user, practica_id, {"PROFESOR", "ADMIN"})

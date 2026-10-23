@@ -3,6 +3,8 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from fastapi import HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import load_only
 from app.core.practice_access import require_practice, sync_hours
 from app.models.models import (
     Auditoria, Empresa, Entrega, Evaluacion, EvaluacionEstadoEnum,
@@ -50,21 +52,47 @@ def editable(db, user, practica_id, roles):
     return practica
 
 
-def build(db, practica, frozen=True):
+def student_summary(result):
+    """Proyección de consulta: nunca expone una revisión utilizable para cerrar."""
+    keys = ("practica", "centro", "supervisor", "evaluacion", "evaluacionVigente",
+            "checklist", "puedeCerrar", "cerrado", "cierre")
+    summary = {key: result[key] for key in keys}
+    config = result["configuracion"]
+    summary["configuracion"] = {key: config[key] for key in (
+        "notaMinima", "motivo", "responsable", "fecha")} if config else None
+    return summary
+
+
+def build(db, practica, frozen=True, compact=False):
     record = expediente_row(db, practica.id)
     if frozen and record and record.cierre:
-        return json.loads(record.cierre)
+        saved = json.loads(record.cierre)
+        return student_summary(saved) if compact else saved
     company = db.get(Empresa, practica.empresa_id) if practica.empresa_id else None
     supervisor = db.query(Supervisor).filter(Supervisor.empresa_id == practica.empresa_id).first() if company else None
     config = json.loads(record.requisitos) if record and record.requisitos else None
     assessment = evaluation_data(evaluation(db, practica))
-    hours = db.query(RegistroHoras).filter(RegistroHoras.practica_id == practica.id).order_by(RegistroHoras.fecha, RegistroHoras.id).all()
-    approved = sum(h.horas for h in hours if h.estado_validacion == RegistroHorasEstadoEnum.VALIDADO)
-    tasks = db.query(Tarea).filter(Tarea.aula_id == practica.aula_id).order_by(Tarea.created_at, Tarea.id).all()
-    deliveries = {e.tarea_id: e for e in db.query(Entrega).join(Tarea, Entrega.tarea_id == Tarea.id).filter(
-        Tarea.aula_id == practica.aula_id, Entrega.alumno_id == practica.practicante_id).order_by(Entrega.id).all()}
-    targets = db.query(Meta).filter(Meta.practica_id == practica.id).order_by(Meta.created_at, Meta.id).all()
     required_tasks, required_targets = set(config["tareas"] if config else []), set(config["metas"] if config else [])
+    if compact:
+        hours = []
+        approved = int(db.query(func.coalesce(func.sum(RegistroHoras.horas), 0)).filter(
+            RegistroHoras.practica_id == practica.id,
+            RegistroHoras.estado_validacion == RegistroHorasEstadoEnum.VALIDADO).scalar())
+    else:
+        hours = db.query(RegistroHoras).filter(RegistroHoras.practica_id == practica.id).order_by(RegistroHoras.fecha, RegistroHoras.id).all()
+        approved = sum(h.horas for h in hours if h.estado_validacion == RegistroHorasEstadoEnum.VALIDADO)
+    tasks_query = db.query(Tarea).filter(Tarea.aula_id == practica.aula_id)
+    deliveries_query = db.query(Entrega).join(Tarea, Entrega.tarea_id == Tarea.id).filter(
+        Tarea.aula_id == practica.aula_id, Entrega.alumno_id == practica.practicante_id)
+    targets_query = db.query(Meta).filter(Meta.practica_id == practica.id)
+    if compact:
+        tasks_query = tasks_query.filter(Tarea.id.in_(required_tasks)).options(load_only(Tarea.id, Tarea.titulo))
+        deliveries_query = deliveries_query.filter(Tarea.id.in_(required_tasks)).options(load_only(Entrega.id, Entrega.tarea_id, Entrega.nota))
+        targets_query = targets_query.filter(Meta.id.in_(required_targets)).options(load_only(
+            Meta.id, Meta.tipo, Meta.cantidad_objetivo, Meta.cantidad_alcanzada))
+    tasks = tasks_query.order_by(Tarea.created_at, Tarea.id).all()
+    deliveries = {e.tarea_id: e for e in deliveries_query.order_by(Entrega.id).all()}
+    targets = targets_query.order_by(Meta.created_at, Meta.id).all()
     minimum = config["notaMinima"] if config else None
     task_rows = []
     for task in tasks:
@@ -72,8 +100,8 @@ def build(db, practica, frozen=True):
         passed = bool(delivery and delivery.nota is not None and (minimum is None or delivery.nota >= minimum))
         task_rows.append({"id": task.id, "titulo": task.titulo, "obligatoria": task.id in required_tasks,
             "entregaId": delivery.id if delivery else None, "nota": delivery.nota if delivery else None,
-            "retroalimentacion": delivery.retroalimentacion if delivery else None, "cumplida": passed})
-    target_rows = [{"id": m.id, "tipo": m.tipo.value, "descripcion": m.descripcion or "",
+            "retroalimentacion": delivery.retroalimentacion if delivery and not compact else None, "cumplida": passed})
+    target_rows = [{"id": m.id, "tipo": m.tipo.value, "descripcion": (m.descripcion or "") if not compact else "",
         "obligatoria": m.id in required_targets, "objetivo": m.cantidad_objetivo,
         "alcanzada": approved if m.tipo == MetaTipoEnum.HORAS else m.cantidad_alcanzada,
         "cumplida": (approved if m.tipo == MetaTipoEnum.HORAS else m.cantidad_alcanzada) >= m.cantidad_objetivo} for m in targets]
@@ -103,6 +131,8 @@ def build(db, practica, frozen=True):
                    "estado": h.estado_validacion.value, "observacion": h.observacion} for h in hours],
         "checklist": checklist, "puedeCerrar": all(c["cumplido"] for c in checklist),
         "cerrado": practica.estado == PracticaEstadoEnum.CERRADA, "cierre": None}
+    if compact:
+        return student_summary(result)
     result["revision"] = hashlib.sha256(encoded(result).encode()).hexdigest()
     return result
 
