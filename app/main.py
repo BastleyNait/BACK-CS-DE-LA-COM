@@ -83,3 +83,7 @@ if settings.APP_ENV in {"development", "test"}:
 # Lecturas acotadas para la experiencia móvil del alumno.
 from app.routers import alumno_navigation
 app.include_router(alumno_navigation.router, prefix=API_PREFIX)
+
+# Páginas y detalle individual para las tareas del alumno.
+from app.routers import alumno_tasks
+app.include_router(alumno_tasks.router, prefix=API_PREFIX)
