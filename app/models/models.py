@@ -7,6 +7,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    JSON,
     LargeBinary,
     String,
     Text,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.session import Base
 
@@ -55,6 +57,8 @@ class PracticaEstadoEnum(str, enum.Enum):
 class NotificacionTipoEnum(str, enum.Enum):
     TAREA_ASIGNADA = "TAREA_ASIGNADA"
     VENCIMIENTO = "VENCIMIENTO"
+    TAREA_ACTUALIZADA = "TAREA_ACTUALIZADA"
+    REVISION_HORAS = "REVISION_HORAS"
 
 
 class RegistroHorasEstadoEnum(str, enum.Enum):
@@ -388,6 +392,7 @@ class Notificacion(Base):
     tipo = Column(Enum(NotificacionTipoEnum), nullable=False)
     titulo = Column(String(200), nullable=False)
     mensaje = Column(Text, nullable=False, default="")
+    destino = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     leida = Column(Integer, nullable=False, default=0)  # 0 / 1 (bool en SQLite)
     fecha = Column(
         DateTime(timezone=True),

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.notices import task_notices
 from app.db.session import get_db
 from app.models.models import (
     Archivo,
@@ -276,6 +277,7 @@ def create_tarea(aula_id: str, payload: CreateTareaRequest, db: Session = Depend
         raise HTTPException(422, "La fecha límite debe ser futura.")
     task = Tarea(id=task_id, aula_id=aula_id, titulo=payload.titulo, descripcion=payload.descripcion, fecha_limite=payload.fechaLimite)
     db.add(task)
+    task_notices(db, task)
     db.commit()
     db.refresh(task)
     return _tarea_to_out(task, None)
@@ -354,6 +356,7 @@ def editar_tarea(aula_id: str, tarea_id: str, payload: EditarTareaRequest, db: S
         user_id=current_user.id, motivo=payload.motivo.strip()))
     from app.routers.admin import _auditar
     _auditar(db, current_user, "EDITAR_TAREA", f"Tarea {task.id}; revisión {revision + 1}. {payload.motivo.strip()}")
+    task_notices(db, task, revision + 1)
     db.commit()
     return _tarea_to_out(task, None)
 

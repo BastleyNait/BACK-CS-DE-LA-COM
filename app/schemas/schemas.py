@@ -252,7 +252,7 @@ class ArchivoOut(BaseModel):
 # ── Empresa / centro de prácticas (HU-13) ─────────────────────────────────────
 
 PracticaEstado = Literal["EN_CURSO", "LISTA_PARA_CIERRE", "CERRADA"]
-NotificacionTipo = Literal["TAREA_ASIGNADA", "VENCIMIENTO"]
+NotificacionTipo = Literal["TAREA_ASIGNADA", "VENCIMIENTO", "TAREA_ACTUALIZADA", "REVISION_HORAS"]
 
 
 class EmpresaOut(BaseModel):
@@ -423,6 +423,20 @@ class ReporteFinalOut(BaseModel):
 # ── Notificaciones (HU-17) ────────────────────────────────────────────────────
 
 
+class DestinoTarea(BaseModel):
+    tipo: Literal["TAREA"]
+    aulaId: str = Field(min_length=1, max_length=200)
+    tareaId: str = Field(min_length=1, max_length=200)
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+
+class DestinoActividad(BaseModel):
+    tipo: Literal["ACTIVIDAD"]
+    practicaId: str = Field(min_length=1, max_length=200)
+    registroId: str = Field(min_length=1, max_length=200)
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+
 class NotificacionOut(BaseModel):
     """Idéntico a la interfaz Notificacion del frontend."""
 
@@ -433,6 +447,7 @@ class NotificacionOut(BaseModel):
     mensaje: str
     leida: bool
     fecha: str
+    destino: DestinoTarea | DestinoActividad | None = Field(default=None, discriminator="tipo")
 
 
 # ── Metas por practicante (HU-20/21) ──────────────────────────────────────────

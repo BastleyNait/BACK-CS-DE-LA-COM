@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.notices import hours_notice
 from app.core.practice_access import require_practice, sync_hours
 from app.core.hours import to_record as _to_registro_out, track_change
 from app.schemas.schemas import RevisarHorasRequest, RegistroHorasOut
@@ -264,5 +265,6 @@ def revisar_horas(registro_id: str, payload: RevisarHorasRequest,
     registro.revision += 1
     track_change(db, current_user, registro, "VALIDACION" if decision == RegistroHorasEstadoEnum.VALIDADO else "RECHAZO", antes)
     sync_hours(db, practica)
+    hours_notice(db, practica, registro)
     db.commit()
     return _to_registro_out(registro)
