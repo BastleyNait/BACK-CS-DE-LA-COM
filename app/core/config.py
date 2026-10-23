@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     AUTO_CREATE_TABLES: bool = True
     TEST_DATABASE_PROJECT_REF: str = ""
     TEST_SEED_PASSWORD: SecretStr = SecretStr("")
+    PRESENTATION_VERSION: str = ""
     GOOGLE_CLIENT_IDS: str = ""
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

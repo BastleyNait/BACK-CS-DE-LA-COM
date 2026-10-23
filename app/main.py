@@ -40,6 +40,14 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+@app.middleware("http")
+async def private_api_responses(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 # ── Routers ────────────────────────────────────────────────────────────────────
 API_PREFIX = "/api/v1"
 
@@ -87,3 +95,7 @@ app.include_router(alumno_navigation.router, prefix=API_PREFIX)
 # Páginas y detalle individual para las tareas del alumno.
 from app.routers import alumno_tasks
 app.include_router(alumno_tasks.router, prefix=API_PREFIX)
+
+@app.get("/api/v1/version")
+def version_avance():
+    return {"app": "PracticasCC", "version": settings.PRESENTATION_VERSION or "desarrollo", "presentacion": bool(settings.PRESENTATION_VERSION)}
