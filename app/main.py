@@ -79,3 +79,7 @@ if settings.APP_ENV in {"development", "test"}:
             return {"status": "ok", "environment": settings.APP_ENV, "schema": "ssp_test", "database": "reachable"}
         except Exception:
             raise HTTPException(status_code=503, detail="La base de prueba no esta preparada o no responde.") from None
+
+# Lecturas acotadas para la experiencia móvil del alumno.
+from app.routers import alumno_navigation
+app.include_router(alumno_navigation.router, prefix=API_PREFIX)
