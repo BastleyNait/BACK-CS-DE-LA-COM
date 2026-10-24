@@ -101,3 +101,7 @@ app.include_router(alumno_tasks.router, prefix=API_PREFIX)
 @app.get("/api/v1/version")
 def version_avance():
     return {"app": "PracticasCC", "version": settings.PRESENTATION_VERSION or "desarrollo", "presentacion": bool(settings.PRESENTATION_VERSION)}
+
+
+from app.routers import staff_pages
+app.include_router(staff_pages.router, prefix=API_PREFIX)
