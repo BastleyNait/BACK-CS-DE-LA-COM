@@ -10,6 +10,7 @@ from app.routers import (
     aulas,
     auth,
     comunicacion,
+    module_pages,
     empresa,
     expedientes,
     metas,
@@ -65,6 +66,7 @@ app.include_router(practicas.router, prefix=API_PREFIX)
 app.include_router(notificaciones.router, prefix=API_PREFIX)
 app.include_router(metas.router, prefix=API_PREFIX)
 app.include_router(comunicacion.router, prefix=API_PREFIX)
+app.include_router(module_pages.router, prefix=API_PREFIX)
 
 
 @app.get("/", tags=["health"])
