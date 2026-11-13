@@ -3,8 +3,8 @@ import unittest
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy import event
-from app.models.models import (Aula, AulaEstadoEnum, CambioTarea, Empresa, Entrega, EntregaEstadoEnum, Inscripcion,
-    Practica, PracticaEstadoEnum, RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum,
+from app.models.models import (Aula, AulaEstadoEnum, CambioTarea, Empresa, Entrega, EntregaEstadoEnum, Inscripcion, Meta,
+    MetaTipoEnum, Practica, PracticaEstadoEnum, RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum,
     RoleEnum, Supervisor, Tarea, User, VersionEntrega)
 from app.routers import staff_pages as pages
 import test_direct_messages as fixture
@@ -142,6 +142,10 @@ class StaffPagesTests(unittest.TestCase):
         self.assertEqual(items[0]['estado'], 'CERRADA')
         self.assertEqual(self.call(pages.practices, 'ABIERTAS', '', 20, None)['total'], 38)
         self.assertEqual(self.call(pages.practices, 'CERRADAS', '', 20, None)['total'], 7)
+        detail = self.call(pages.practice_detail, 'p010')
+        self.assertEqual((detail['id'], detail['horasAcumuladas'], detail['estado']), ('p010', 4, 'LISTA_PARA_CIERRE'))
+        self.denied(404, pages.practice_detail, 'p010', role='otherteacher')
+        self.denied(403, pages.practice_detail, 'p010', role='student')
         self.assertEqual(self.call(pages.practices, 'TODAS', '', 20, None, role='otherteacher')['total'], 0)
         self.db.get(Supervisor, 'sup').user_id = None; self.db.commit()
         self.assertEqual(self.call(pages.practices, 'TODAS', '', 20, None, role='supervisor')['total'], 0)
@@ -173,6 +177,39 @@ class StaffPagesTests(unittest.TestCase):
         self.denied(403, pages.task_detail, 'foreign', 'foreign-task')
         self.denied(403, pages.task_page, 'a', '', 20, None, role='student')
         self.denied(403, pages.task_page, 'foreign', '', 20, None)
+
+    def test_goal_pages_use_validated_hours_filters_and_exact_totals(self):
+        self.db.add(Practica(id='goal-practice', practicante_id='student', aula_id='a', periodo='TEST', horas_minimas=10))
+        for key, state, hours in [('ok', RegistroHorasEstadoEnum.VALIDADO, 4), ('pending', RegistroHorasEstadoEnum.PENDIENTE, 9), ('rejected', RegistroHorasEstadoEnum.RECHAZADO, 6)]:
+            self.db.add(RegistroHoras(id='goal-' + key, practica_id='goal-practice', horas=hours, descripcion='Horas', estado_validacion=state))
+        date = datetime(2026, 10, 24, tzinfo=timezone.utc)
+        for i in range(43):
+            key = f'{i:03}'
+            self.db.add(Meta(id='g' + key, practica_id='goal-practice', tipo=MetaTipoEnum.ARTICULOS, cantidad_objetivo=10,
+                cantidad_alcanzada=10 if i < 10 else 3, descripcion='Cien % revisado' if i == 0 else f'Meta {key}',
+                creado_por='Docente', created_at=date))
+        for key, objetivo in [('g-horas-ok', 3), ('g-horas-pending', 5)]:
+            self.db.add(Meta(id=key, practica_id='goal-practice', tipo=MetaTipoEnum.HORAS, cantidad_objetivo=objetivo,
+                cantidad_alcanzada=999, descripcion='Horas validadas', creado_por='Docente', created_at=date))
+        self.db.commit(); self.db.expunge_all(); self.users = {key: self.db.get(User, key) for key in self.users}
+        items = self.all_pages(lambda cursor: self.call(pages.goal_page, 'goal-practice', 'TODAS', '', 20, cursor))
+        self.assertFalse(any(isinstance(row, RegistroHoras) for row in self.db.identity_map.values()))
+        self.assertTrue(all(row['practicaId'] == 'goal-practice' and row['practicanteId'] == 'student' and row['practicanteNombre'] == 'student Prueba' for row in items))
+        hours = {row['id']: row['cantidadAlcanzada'] for row in items if row['tipo'] == 'HORAS'}
+        self.assertEqual(hours, {'g-horas-ok': 4, 'g-horas-pending': 4})
+        done = self.call(pages.goal_page, 'goal-practice', 'COMPLETADAS', '', 20, None)
+        self.assertEqual((done['total'], done['totalMetas'], done['completadas']), (11, 45, 11))
+        pending = self.call(pages.goal_page, 'goal-practice', 'EN_PROGRESO', '', 20, None)
+        self.assertEqual((pending['total'], pending['totalMetas'], pending['completadas']), (34, 45, 11))
+        self.assertEqual(self.call(pages.goal_page, 'goal-practice', 'TODAS', '%', 20, None)['total'], 1)
+        cursor = self.call(pages.goal_page, 'goal-practice', 'TODAS', '', 20, None)['siguiente']
+        self.denied(422, pages.goal_page, 'goal-practice', 'COMPLETADAS', '', 20, cursor)
+        self.denied(422, pages.goal_page, 'goal-practice', 'INVALID', '', 20, None)
+        self.denied(422, pages.goal_page, 'goal-practice', 'TODAS', 'x' * 121, 20, None)
+        self.denied(422, pages.goal_page, 'goal-practice', 'TODAS', '', 0, None)
+        self.denied(403, pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='student')
+        self.denied(404, pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='otherteacher')
+        self.assertEqual(self.call(pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='admin')['totalMetas'], 45)
 
     def test_cursor_scopes_filters_roles_resource_and_validation(self):
         self.practice_rows()

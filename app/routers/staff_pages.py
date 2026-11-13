@@ -3,12 +3,12 @@ import base64
 import hashlib
 import json
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 from app.core.deps import get_current_user
-from app.core.practice_access import visible_practices
+from app.core.practice_access import require_practice, visible_practices
 from app.db.session import get_db
-from app.models.models import (Aula, CambioTarea, Entrega, Inscripcion, Practica, PracticaEstadoEnum,
+from app.models.models import (Aula, CambioTarea, Entrega, Inscripcion, Meta, MetaTipoEnum, Practica, PracticaEstadoEnum,
     RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum, Tarea, User, VersionEntrega)
 from app.routers.aulas import _aula_to_out
 from app.routers.profesor import _solo_profesor_o_admin, _aula_del_profesor
@@ -203,26 +203,76 @@ def grades(aula_id: str, q: str = '', limite: int = Query(20, ge=1, le=40), curs
     return result
 
 
+def _staff_practice(current_user):
+    if current_user.role.value not in ('PROFESOR', 'SUPERVISOR', 'ADMIN'):
+        raise HTTPException(403, 'Esta consulta corresponde al personal de prácticas.')
+
+
+@router.get('/practicas/{practica_id}/metas/pagina')
+def goal_page(practica_id: str, estado: str = 'TODAS', q: str = '', limite: int = Query(20, ge=1, le=40),
+              cursor: str | None = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _staff_practice(current_user)
+    require_practice(db, current_user, practica_id)
+    if estado not in ('TODAS', 'EN_PROGRESO', 'COMPLETADAS'):
+        raise HTTPException(422, 'Selecciona todas, en progreso o completadas.')
+    q = _search(q)
+    approved = db.query(func.coalesce(func.sum(RegistroHoras.horas), 0)).filter(RegistroHoras.practica_id == practica_id,
+        RegistroHoras.estado_validacion == RegistroHorasEstadoEnum.VALIDADO).scalar()
+    reached = case((Meta.tipo == MetaTipoEnum.HORAS, approved), else_=Meta.cantidad_alcanzada)
+    query = db.query(Meta.id, Meta.practica_id, Meta.tipo, Meta.cantidad_objetivo, Meta.descripcion, Meta.creado_por,
+        Meta.created_at, Practica.practicante_id, User.nombres, User.apellidos, reached.label('alcanzada')).join(
+        Practica, Practica.id == Meta.practica_id).join(User, User.id == Practica.practicante_id).filter(
+        Meta.practica_id == practica_id)
+    if estado != 'TODAS':
+        query = query.filter(reached >= Meta.cantidad_objetivo if estado == 'COMPLETADAS' else reached < Meta.cantidad_objetivo)
+    if q:
+        query = query.filter(func.lower(func.coalesce(Meta.descripcion, '')).contains(q, autoescape=True))
+    result = _page(query, Meta, f'metas:{current_user.id}:{practica_id}:{estado}:{q}', limite, cursor,
+        lambda row: {'id': row.id, 'practicaId': row.practica_id, 'practicanteId': row.practicante_id,
+            'practicanteNombre': f'{row.nombres} {row.apellidos}', 'tipo': row.tipo.value,
+            'cantidadObjetivo': row.cantidad_objetivo, 'cantidadAlcanzada': row.alcanzada,
+            'descripcion': row.descripcion, 'creadoPor': row.creado_por, 'fechaCreacion': row.created_at.isoformat()})
+    all_goals = db.query(Meta.id).filter(Meta.practica_id == practica_id)
+    result['totalMetas'] = all_goals.count()
+    result['completadas'] = all_goals.filter(reached >= Meta.cantidad_objetivo).count()
+    return result
+
+
+def _practice_query(db, current_user):
+    approved = db.query(func.coalesce(func.sum(RegistroHoras.horas), 0)).filter(RegistroHoras.practica_id == Practica.id,
+        RegistroHoras.estado_validacion == RegistroHorasEstadoEnum.VALIDADO).correlate(Practica).scalar_subquery()
+    return visible_practices(db, current_user).with_entities(Practica.id, Practica.practicante_id, Practica.aula_id,
+        Practica.periodo, Practica.horas_minimas, Practica.estado, Aula.nombre.label('aula_nombre'), _name().label('nombre'),
+        approved.label('aprobadas')).join(User, User.id == Practica.practicante_id).join(Aula, Aula.id == Practica.aula_id)
+
+
+def _practice_summary(row):
+    state = 'CERRADA' if row.estado == PracticaEstadoEnum.CERRADA else 'LISTA_PARA_CIERRE' if row.aprobadas >= row.horas_minimas else 'EN_CURSO'
+    return {'id': row.id, 'practicanteId': row.practicante_id, 'practicanteNombre': row.nombre, 'aulaId': row.aula_id,
+        'aulaNombre': row.aula_nombre, 'periodo': row.periodo, 'horasAcumuladas': row.aprobadas,
+        'horasMinimas': row.horas_minimas, 'estado': state}
+
+
 @router.get('/practicas/pagina')
 def practices(estado: str = 'TODAS', q: str = '', limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
               db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role.value not in ('PROFESOR', 'SUPERVISOR', 'ADMIN'):
-        raise HTTPException(403, 'Esta consulta corresponde al personal de prácticas.')
+    _staff_practice(current_user)
     if estado not in ('TODAS', 'ABIERTAS', 'CERRADAS'):
         raise HTTPException(422, 'Selecciona todas, abiertas o cerradas.')
     q = _search(q)
-    approved = db.query(func.coalesce(func.sum(RegistroHoras.horas), 0)).filter(RegistroHoras.practica_id == Practica.id,
-        RegistroHoras.estado_validacion == RegistroHorasEstadoEnum.VALIDADO).correlate(Practica).scalar_subquery()
-    query = visible_practices(db, current_user).with_entities(Practica.id, Practica.practicante_id, Practica.aula_id,
-        Practica.periodo, Practica.horas_minimas, Practica.estado, Aula.nombre.label('aula_nombre'), _name().label('nombre'), approved.label('aprobadas'))
-    query = query.join(User, User.id == Practica.practicante_id).join(Aula, Aula.id == Practica.aula_id)
+    query = _practice_query(db, current_user)
     if estado != 'TODAS':
         query = query.filter(Practica.estado == PracticaEstadoEnum.CERRADA if estado == 'CERRADAS' else Practica.estado != PracticaEstadoEnum.CERRADA)
     if q:
         query = query.filter(func.lower(_name() + ' ' + Aula.nombre + ' ' + Practica.periodo).contains(q, autoescape=True))
-    def pack(row):
-        state = 'CERRADA' if row.estado == PracticaEstadoEnum.CERRADA else 'LISTA_PARA_CIERRE' if row.aprobadas >= row.horas_minimas else 'EN_CURSO'
-        return {'id': row.id, 'practicanteId': row.practicante_id, 'practicanteNombre': row.nombre, 'aulaId': row.aula_id,
-            'aulaNombre': row.aula_nombre, 'periodo': row.periodo, 'horasAcumuladas': row.aprobadas, 'horasMinimas': row.horas_minimas, 'estado': state}
     return _alphabetic(query, func.lower(User.apellidos + ' ' + User.nombres), Practica.id,
-        f'practicas:{current_user.id}:{estado}:{q}', limite, cursor, pack)
+        f'practicas:{current_user.id}:{estado}:{q}', limite, cursor, _practice_summary)
+
+
+@router.get('/practicas/{practica_id}')
+def practice_detail(practica_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _staff_practice(current_user)
+    row = _practice_query(db, current_user).filter(Practica.id == practica_id).first()
+    if row is None:
+        raise HTTPException(404, 'La práctica no está disponible para tu cuenta.')
+    return _practice_summary(row)

@@ -1,4 +1,4 @@
-# Lecturas paginadas del personal · incrementos 28 y 29
+# Lecturas paginadas del personal · incrementos 28, 29 y 30
 
 `app/routers/staff_pages.py` añade lecturas bajo `/api/v1/equipo`. No modifica escrituras ni estructura de tablas.
 
@@ -13,9 +13,11 @@
 | `/aulas/{id}/tareas/{tarea}` | Tarea individual del aula con instrucciones completas y revisión máxima; 404 si es de otra aula. |
 | `/aulas/{id}/notas/pagina` | Resumen por matriculado, promedio de notas existentes, asistencia y horas validadas; promedio global independiente de búsqueda. |
 | `/practicas/pagina` | Docente, supervisor o administración mediante `visible_practices`; horas sumadas solo para VALIDADO. |
+| `/practicas/{id}` | Resumen exacto de la práctica solicitada, con la misma proyección y alcance que la página; 404 fuera de la cuenta. |
+| `/practicas/{id}/metas/pagina` | Metas de la práctica solicitada con `totalMetas` y `completadas` globales; `estado=TODAS\|EN_PROGRESO\|COMPLETADAS`; búsqueda por descripción. Las metas `HORAS` usan solo horas validadas. |
 
-Páginas `{items,total,siguiente}`, 20 por defecto y máximo40. Notas incluye `promedioGeneral`. Búsqueda `q` literal escapada, máximo120 después de recortar, sin distinción de mayúsculas según `lower` de la base. Prácticas filtra `estado=TODAS|ABIERTAS|CERRADAS`; alcanzar horas no concede autorización de cierre.
+Páginas `{items,total,siguiente}`, 20 por defecto y máximo40. Notas incluye `promedioGeneral` y metas incluye `totalMetas`/`completadas`. Búsqueda `q` literal escapada, máximo120 después de recortar, sin distinción de mayúsculas según `lower` de la base. Prácticas filtra `estado=TODAS|ABIERTAS|CERRADAS`; metas filtra `estado=TODAS|EN_PROGRESO|COMPLETADAS`. Alcanzar horas no concede autorización de cierre.
 
 Cursores por clave de orden e ID, con ámbito hash de usuario/recurso/filtros. No son credenciales: todo permiso y filtro se aplica de nuevo en cada consulta. El total corresponde a los filtros sobre toda la consulta, no a la página. Los cambios concurrentes de nombres, fechas, notas o matrículas pueden alterar el conjunto: Actualizar reinicia la lista, no se promete una instantánea transaccional entre peticiones.
 
-`tests/test_staff_pages.py` cubre 20/20/5 con empates, búsqueda literal, proyecciones sin cuerpos, detalle de aula/entrega/tarea exactos, revisión máxima sin contenido histórico, conteo de entregas por tarea, cero frente a nulo, promedio global con exclusión de no matriculados, asistencia, horas validadas, supervisión retirada, cambio de docente y cursores de otra consulta. Solo SQLite; la integración real consulta `ssp_test` sin nuevas escrituras académicas.
+`tests/test_staff_pages.py` cubre 20/20/5 con empates, búsqueda literal, proyecciones sin cuerpos, detalle de aula/entrega/tarea/práctica exactos, revisión máxima sin contenido histórico, conteo de entregas por tarea, cero frente a nulo, promedio global con exclusión de no matriculados, asistencia, horas validadas, supervisión retirada, cambio de docente, metas con totales globales y cursores de otra consulta. Solo SQLite; la integración real consulta `ssp_test` sin nuevas escrituras académicas. La base `ssp_test` no responde desde el 13 de noviembre; el recorrido real queda pendiente de restablecer el proyecto.
