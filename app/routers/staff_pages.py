@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.deps import get_current_user
 from app.core.practice_access import visible_practices
 from app.db.session import get_db
-from app.models.models import (Aula, Entrega, Inscripcion, Practica, PracticaEstadoEnum,
+from app.models.models import (Aula, CambioTarea, Entrega, Inscripcion, Practica, PracticaEstadoEnum,
     RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum, Tarea, User, VersionEntrega)
 from app.routers.aulas import _aula_to_out
 from app.routers.profesor import _solo_profesor_o_admin, _aula_del_profesor
@@ -139,6 +139,42 @@ def delivery(aula_id: str, entrega_id: str, db: Session = Depends(get_db), curre
         alumnoId=row.alumno_id, alumnoNombre=f'{row.alumno.nombres} {row.alumno.apellidos}', descripcion=row.descripcion,
         comentario=row.comentario, archivoId=row.archivo_id, estado=row.estado.value, nota=row.nota,
         retroalimentacion=row.retroalimentacion, createdAt=row.created_at.isoformat())
+
+
+def _task_revision(db):
+    return db.query(func.coalesce(func.max(CambioTarea.revision), 0)).filter(
+        CambioTarea.tarea_id == Tarea.id).correlate(Tarea).scalar_subquery()
+
+
+@router.get('/aulas/{aula_id}/tareas/pagina')
+def task_page(aula_id: str, q: str = '', limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+              db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _solo_profesor_o_admin(current_user)
+    _aula_del_profesor(aula_id, current_user, db)
+    q = _search(q)
+    entregas = db.query(func.count(Entrega.id)).filter(Entrega.tarea_id == Tarea.id).correlate(Tarea).scalar_subquery()
+    query = db.query(Tarea.id, Tarea.aula_id, Tarea.titulo, Tarea.created_at, Tarea.fecha_limite,
+        func.substr(Tarea.descripcion, 1, 180).label('resumen'), _task_revision(db).label('revision'),
+        entregas.label('entregas')).filter(Tarea.aula_id == aula_id)
+    if q:
+        query = query.filter(func.lower(Tarea.titulo).contains(q, autoescape=True))
+    return _page(query, Tarea, f'tareas:{current_user.id}:{aula_id}:{q}', limite, cursor,
+        lambda row: {'id': row.id, 'aulaId': row.aula_id, 'titulo': row.titulo, 'resumen': row.resumen,
+            'createdAt': row.created_at.isoformat(), 'fechaLimite': row.fecha_limite.isoformat() if row.fecha_limite else None,
+            'revision': row.revision, 'entregas': row.entregas})
+
+
+@router.get('/aulas/{aula_id}/tareas/{tarea_id}')
+def task_detail(aula_id: str, tarea_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _solo_profesor_o_admin(current_user)
+    _aula_del_profesor(aula_id, current_user, db)
+    row = db.query(Tarea).filter(Tarea.aula_id == aula_id, Tarea.id == tarea_id).first()
+    if row is None:
+        raise HTTPException(404, 'La tarea no está disponible en esta aula.')
+    revision = db.query(func.coalesce(func.max(CambioTarea.revision), 0)).filter(CambioTarea.tarea_id == row.id).scalar()
+    return {'id': row.id, 'aulaId': row.aula_id, 'titulo': row.titulo, 'descripcion': row.descripcion,
+        'fechaLimite': row.fecha_limite.isoformat() if row.fecha_limite else None,
+        'createdAt': row.created_at.isoformat(), 'revision': revision, 'entrega': None}
 
 
 @router.get('/aulas/{aula_id}/notas/pagina')

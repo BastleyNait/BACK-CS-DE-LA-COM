@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy import event
-from app.models.models import (Aula, AulaEstadoEnum, Empresa, Entrega, EntregaEstadoEnum, Inscripcion,
+from app.models.models import (Aula, AulaEstadoEnum, CambioTarea, Empresa, Entrega, EntregaEstadoEnum, Inscripcion,
     Practica, PracticaEstadoEnum, RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum,
     RoleEnum, Supervisor, Tarea, User, VersionEntrega)
 from app.routers import staff_pages as pages
@@ -147,12 +147,40 @@ class StaffPagesTests(unittest.TestCase):
         self.assertEqual(self.call(pages.practices, 'TODAS', '', 20, None, role='supervisor')['total'], 0)
         self.denied(403, pages.practices, 'TODAS', '', 20, None, role='student')
 
+    def test_teacher_task_pages_stay_projected_and_detail_is_exact(self):
+        date = datetime(2026, 10, 24, tzinfo=timezone.utc)
+        for i in range(45):
+            self.db.add(Tarea(id=f'k{i:03}', aula_id='a', titulo='Informe gemelo', descripcion='Instrucción' * 500, created_at=date))
+        self.db.add(Tarea(id='foreign-task', aula_id='foreign', titulo='Informe ajeno'))
+        self.db.flush(); self.db.get(Tarea, 'k000').titulo = 'Informe %'
+        for i, student in enumerate(['student', 'peer']):
+            self.db.add(Entrega(id=f'del{i}', tarea_id='k001', alumno_id=student))
+        self.db.add(CambioTarea(id='c1', tarea_id='k001', revision=1, contenido='Contenido' * 500, user_id='teacher', motivo='Primer cambio'))
+        self.db.add(CambioTarea(id='c2', tarea_id='k001', revision=2, contenido='Contenido' * 500, user_id='teacher', motivo='Segundo cambio'))
+        self.db.commit(); self.db.expunge_all(); self.users = {key: self.db.get(User, key) for key in self.users}
+        items = self.all_pages(lambda cursor: self.call(pages.task_page, 'a', '', 20, cursor))
+        self.assertEqual([row['id'] for row in items], [f'k{i:03}' for i in range(44, -1, -1)])
+        self.assertFalse(any(isinstance(obj, CambioTarea) for obj in self.db.identity_map.values()))
+        self.assertTrue(all('descripcion' not in row and len(row['resumen']) <= 180 for row in items))
+        changed = next(row for row in items if row['id'] == 'k001')
+        self.assertEqual((changed['revision'], changed['entregas']), (2, 2))
+        self.assertEqual(self.call(pages.task_page, 'a', '%', 20, None)['items'][0]['id'], 'k000')
+        self.assertEqual(self.call(pages.task_page, 'a', 'informe gemelo', 20, None)['total'], 44)
+        detail = self.call(pages.task_detail, 'a', 'k001')
+        self.assertEqual((detail['revision'], len(detail['descripcion']), detail['entrega']), (2, 5500, None))
+        self.assertFalse(any(isinstance(obj, CambioTarea) for obj in self.db.identity_map.values()))
+        self.denied(404, pages.task_detail, 'a', 'foreign-task')
+        self.denied(403, pages.task_detail, 'foreign', 'foreign-task')
+        self.denied(403, pages.task_page, 'a', '', 20, None, role='student')
+        self.denied(403, pages.task_page, 'foreign', '', 20, None)
+
     def test_cursor_scopes_filters_roles_resource_and_validation(self):
         self.practice_rows()
         cursor = self.call(pages.students, 'a', '', 20, None)['siguiente']
         self.denied(422, pages.students, 'a', 'Mismo', 20, cursor)
         self.denied(422, pages.students, 'a', '', 20, cursor, role='admin')
         self.denied(422, pages.grades, 'a', '', 20, cursor)
+        self.denied(422, pages.task_page, 'a', '', 20, cursor)
         for value in ['invalid', 'x' * 2050, base64_cursor()]:
             self.denied(422, pages.students, 'a', '', 20, value)
         self.denied(422, pages.students, 'a', '', 0, None)
