@@ -13,6 +13,10 @@ Contrato actual: `GET /api/v1/practicas/capacidades` devuelve `versionHoras: 2`.
 
 Los registros devuelven `revision` y `observacion`. La versión 1 de revisión sin revisión explícita ahora recibe 422; la app nueva bloquea su uso contra servidores de versión 1 para no perder las observaciones. Consulta y registro siguen disponibles en versión 1.
 
+## Bitácora del personal por páginas
+
+`GET /api/v1/equipo/practicas/{id}/horas/pagina?estado=TODAS|PENDIENTES|VALIDADAS|RECHAZADAS&limite=20&cursor=` entrega la bitácora de una práctica en páginas de 1–40 con `total` del filtro y totales globales `horasValidadas`, `horasPendientes` y `horasRechazadas` calculados en SQL sobre toda la práctica, independientes del filtro. Orden por fecha descendente con desempate por ID; filas históricas sin fecha quedan al final y no rompen el cursor. Cursor opaco ligado a la consulta (usuario, práctica y filtro): un cursor de otra consulta da 422. Mismo alcance que `GET /practicas/{id}/horas` (docente del aula, supervisor vinculado, administración; alumno 403 y aula ajena 404). Es solo lectura: registrar, revisar y corregir conservan su circuito confirmado; la app recarga la página vigente tras cada escritura.
+
 Las escrituras bloquean primero la práctica y después el registro cuando corresponde. Se recalcula el acumulado mediante la suma de registros `VALIDADO`, dentro de la misma transacción; crear pendientes y rechazar no aumenta el avance. Las respuestas de prácticas calculan las horas validadas desde los registros, incluso si un acumulado antiguo era incorrecto. No se ha ejecutado una corrección masiva de datos anteriores.
 
 El cierre solo permite docente responsable/administración, bloquea la práctica y recalcula horas validadas antes de comprobar el mínimo. El checklist académico completo del cierre sigue pendiente; no se declara resuelto por esta corrección.
@@ -32,6 +36,6 @@ Cada registro, revisión y corrección crea un evento de historial y un evento a
 
 ## Verificación
 
-`python -m unittest discover -s tests -p test_hours_flow.py`: ocho pruebas aisladas de validación, permisos, repetición, rechazo, acumulado, cierre, corrección/historial y revisiones obsoletas. No conectan con Supabase.
+`python -m unittest discover -s tests -p test_hours_flow.py`: ocho pruebas aisladas de validación, permisos, repetición, rechazo, acumulado, cierre, corrección/historial y revisiones obsoletas. No conectan con Supabase. La bitácora paginada se cubre en `test_staff_pages.py` (páginas con filas históricas sin fecha, filtros con totales globales intactos, cursores por usuario y filtro, límites y permisos).
 
 Migración comprobada en Supabase autorizado. Chromium y API recorren registro → rechazo concurrente con un solo evento → corrección/reenvío y repetición → revisión antigua 409 → validación nueva. Historial de cuatro cambios y solo tres horas corregidas añadidas al acumulado. Evidencias locales ignoradas en el incremento 13 de la app. Borradores persistentes y política académica definitiva siguen pendientes. Integración a main y publicación de producción requieren autorización concreta.
