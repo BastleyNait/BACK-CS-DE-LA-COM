@@ -18,10 +18,16 @@ Se reemplazan únicamente las filas del día de alumnos del padrón actual; los 
 
 Cada cambio se guarda con una entrada `ASISTENCIA_ACADEMICA` en la tabla existente `auditoria`, dentro de la misma transacción: actor, fecha, aula/día, revisión anterior, padrón y valores anteriores/nuevos, con referencia a filas conservadas fuera del padrón. Acceso administrativo mediante `/api/v1/admin/auditoria`. Los registros anteriores no reciben una autoría inventada.
 
+## Historial paginado
+
+`GET /api/v1/profesor/aulas/{aula_id}/asistencia/historial?limite=20&cursor=` devuelve los días con asistencia guardada del aula, del más reciente al más antiguo. Cada ítem es `{fecha, presentes, registrados}` con fechas civiles ISO y `total` cuenta los días distintos de todo el aula, no solo la página. Paginación keyset con cursor opaco ligado a la consulta (usuario y aula): un cursor de otra consulta da 422. `limite` admite 1–40. Docente responsable/ADMIN; el supervisor y los alumnos reciben 403 y un docente ajeno no accede al aula.
+
+Consultar sin guardar no crea registro ni entra al historial; repetir un guardado idéntico tampoco duplica el día.
+
 ## Compatibilidad y verificación
 
 La app consulta servidores anteriores, pero solo permite guardar cuando reconoce la versión y recibe una revisión válida. Los clientes antiguos sin revisión reciben 422 al escribir en este backend actualizado.
 
-`python -m unittest discover -s tests -p test_attendance_flow.py`: seis pruebas aisladas de propuesta/guardado, repetición y auditoría, padrón, conflicto, fechas/permisos, historial retirado y normalización de filas antiguas. El recorrido real está documentado en el incremento 11 de la app.
+`python -m unittest discover -s tests -p test_attendance_flow.py`: ocho pruebas aisladas de propuesta/guardado, repetición y auditoría, padrón, conflicto, fechas/permisos, historial retirado, normalización de filas antiguas e historial paginado (orden por día, cursor y alcance, permisos). El recorrido real está documentado en el incremento 11 de la app.
 
 Pendiente: padrón histórico por sesión, pantalla dedicada de auditoría y procedimientos académicos de corrección. Rama de desarrollo; producción no se ha desplegado.
