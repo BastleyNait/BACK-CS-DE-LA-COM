@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, joinedload
@@ -276,3 +277,58 @@ def practice_detail(practica_id: str, db: Session = Depends(get_db), current_use
     if row is None:
         raise HTTPException(404, 'La práctica no está disponible para tu cuenta.')
     return _practice_summary(row)
+
+
+def _horas_out(r):
+    return {'id': r.id, 'practicaId': r.practica_id, 'fecha': r.fecha.isoformat() if r.fecha else None, 'horas': r.horas,
+        'descripcion': r.descripcion, 'estadoValidacion': r.estado_validacion.value,
+        'revision': r.revision, 'observacion': r.observacion}
+
+
+@router.get('/practicas/{practica_id}/horas/pagina')
+def hours_page(practica_id: str, estado: str = 'TODAS', limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+               db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Bitácora por páginas con totales globales; la escritura mantiene su circuito."""
+    _staff_practice(current_user)
+    require_practice(db, current_user, practica_id)
+    states = {'TODAS': None, 'PENDIENTES': RegistroHorasEstadoEnum.PENDIENTE,
+        'VALIDADAS': RegistroHorasEstadoEnum.VALIDADO, 'RECHAZADAS': RegistroHorasEstadoEnum.RECHAZADO}
+    if not 1 <= limite <= 40:
+        raise HTTPException(422, 'El tamaño de página debe estar entre 1 y 40.')
+    if estado not in states:
+        raise HTTPException(422, 'Selecciona todas, pendientes, validadas o rechazadas.')
+    query = db.query(RegistroHoras).filter(RegistroHoras.practica_id == practica_id)
+    if states[estado] is not None:
+        query = query.filter(RegistroHoras.estado_validacion == states[estado])
+    total = query.order_by(None).count()
+    scope = hashlib.sha256(f'horas:{current_user.id}:{practica_id}:{estado}'.encode()).hexdigest()
+    if cursor:
+        try:
+            if len(cursor) > 2048:
+                raise ValueError()
+            anchor = json.loads(base64.b64decode(cursor + '=' * (-len(cursor) % 4), altchars=b'-_', validate=True))
+            if (not isinstance(anchor, list) or len(anchor) != 3 or anchor[0] != scope
+                    or not isinstance(anchor[1], str) or len(anchor[1]) > 50
+                    or not isinstance(anchor[2], str) or not 1 <= len(anchor[2]) <= 255):
+                raise ValueError()
+            anterior = datetime.fromisoformat(anchor[1]) if anchor[1] else None
+        except (ValueError, TypeError, json.JSONDecodeError):
+            raise HTTPException(422, 'La página no corresponde a esta consulta. Actualiza la lista.') from None
+        if anterior is None:
+            query = query.filter(and_(RegistroHoras.fecha.is_(None), RegistroHoras.id < anchor[2]))
+        else:
+            query = query.filter(or_(RegistroHoras.fecha < anterior,
+                and_(RegistroHoras.fecha == anterior, RegistroHoras.id < anchor[2]), RegistroHoras.fecha.is_(None)))
+    rows = query.order_by(RegistroHoras.fecha.desc().nullslast(), RegistroHoras.id.desc()).limit(limite + 1).all()
+    shown = rows[:limite]
+    siguiente = None
+    if len(rows) > limite:
+        last = shown[-1]
+        siguiente = base64.urlsafe_b64encode(json.dumps([scope, last.fecha.isoformat() if last.fecha else '', last.id],
+            separators=(',', ':')).encode()).decode().rstrip('=')
+    sums = dict(db.query(RegistroHoras.estado_validacion, func.coalesce(func.sum(RegistroHoras.horas), 0)).filter(
+        RegistroHoras.practica_id == practica_id).group_by(RegistroHoras.estado_validacion).all())
+    return {'items': [_horas_out(row) for row in shown], 'total': total, 'siguiente': siguiente,
+        'horasValidadas': sums.get(RegistroHorasEstadoEnum.VALIDADO, 0),
+        'horasPendientes': sums.get(RegistroHorasEstadoEnum.PENDIENTE, 0),
+        'horasRechazadas': sums.get(RegistroHorasEstadoEnum.RECHAZADO, 0)}

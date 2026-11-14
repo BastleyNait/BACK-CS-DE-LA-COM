@@ -1,6 +1,6 @@
 """Volumen, proyecciones y permisos en SQLite; sin escribir en Supabase."""
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy import event
 from app.models.models import (Aula, AulaEstadoEnum, CambioTarea, Empresa, Entrega, EntregaEstadoEnum, Inscripcion, Meta,
@@ -210,6 +210,51 @@ class StaffPagesTests(unittest.TestCase):
         self.denied(403, pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='student')
         self.denied(404, pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='otherteacher')
         self.assertEqual(self.call(pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='admin')['totalMetas'], 45)
+
+    def test_hours_pages_filters_global_sums_cursor_and_roles(self):
+        self.db.add(Practica(id='hours-practice', practicante_id='student', aula_id='a', periodo='TEST', horas_minimas=100))
+        date = datetime(2026, 10, 24, tzinfo=timezone.utc)
+        for i in range(24):
+            self.db.add(RegistroHoras(id=f'hp-v{i:02}', practica_id='hours-practice', fecha=date - timedelta(days=i + 3), horas=2, descripcion=f'Validada {i:02}', estado_validacion=RegistroHorasEstadoEnum.VALIDADO))
+        for i in range(10):
+            self.db.add(RegistroHoras(id=f'hp-p{i:02}', practica_id='hours-practice', fecha=date - timedelta(days=i + 1), horas=1, descripcion=f'Pendiente {i:02}', estado_validacion=RegistroHorasEstadoEnum.PENDIENTE))
+        for i in range(5):
+            self.db.add(RegistroHoras(id=f'hp-r{i:02}', practica_id='hours-practice', fecha=date - timedelta(days=i + 2), horas=3, descripcion=f'Rechazada {i:02}', estado_validacion=RegistroHorasEstadoEnum.RECHAZADO))
+        # El default de Python reemplaza None al insertar por ORM; un INSERT de core conserva el NULL histórico.
+        self.db.execute(RegistroHoras.__table__.insert().values(id='hp-legacy', practica_id='hours-practice', fecha=None, horas=1, descripcion='Sin fecha', estado_validacion=RegistroHorasEstadoEnum.PENDIENTE))
+        self.db.commit(); self.db.expunge_all(); self.users = {key: self.db.get(User, key) for key in self.users}
+        sums = {'horasValidadas': 48, 'horasPendientes': 11, 'horasRechazadas': 15}
+        first = self.call(pages.hours_page, 'hours-practice', 'TODAS', 20, None)
+        self.assertEqual((first['total'], len(first['items'])), (40, 20))
+        self.assertEqual({key: first[key] for key in sums}, sums)
+        self.assertEqual(first['items'][0]['id'], 'hp-p00')
+        self.assertTrue(all(row['practicaId'] == 'hours-practice' for row in first['items']))
+        self.assertFalse(any('descripcion' not in row or not row['descripcion'] for row in first['items']))
+        second = self.call(pages.hours_page, 'hours-practice', 'TODAS', 20, first['siguiente'])
+        self.assertEqual((second['total'], len(second['items']), second['siguiente']), (40, 20, None))
+        self.assertEqual({key: second[key] for key in sums}, sums)
+        rows = first['items'] + second['items']
+        self.assertEqual(len({row['id'] for row in rows}), 40)
+        self.assertEqual(second['items'][-1]['id'], 'hp-legacy')
+        self.assertIsNone(second['items'][-1]['fecha'])
+        pending = self.call(pages.hours_page, 'hours-practice', 'PENDIENTES', 20, None)
+        self.assertEqual((pending['total'], len(pending['items']), pending['siguiente']), (11, 11, None))
+        self.assertTrue(all(row['estadoValidacion'] == 'PENDIENTE' for row in pending['items']))
+        self.assertEqual({key: pending[key] for key in sums}, sums)
+        valid = self.call(pages.hours_page, 'hours-practice', 'VALIDADAS', 20, None)
+        self.assertEqual((valid['total'], len(valid['items'])), (24, 20))
+        self.assertNotEqual(valid['siguiente'], None)
+        tail = self.call(pages.hours_page, 'hours-practice', 'VALIDADAS', 20, valid['siguiente'])
+        self.assertEqual((tail['total'], len(tail['items']), tail['siguiente']), (24, 4, None))
+        self.assertEqual({key: tail[key] for key in sums}, sums)
+        self.denied(422, pages.hours_page, 'hours-practice', 'PENDIENTES', 20, first['siguiente'])
+        self.denied(422, pages.hours_page, 'hours-practice', 'TODAS', 20, valid['siguiente'])
+        self.denied(422, pages.hours_page, 'hours-practice', 'TODAS', 20, self.call(pages.hours_page, 'hours-practice', 'TODAS', 20, None, role='admin')['siguiente'])
+        self.denied(422, pages.hours_page, 'hours-practice', 'INVALID', 20, None)
+        self.denied(422, pages.hours_page, 'hours-practice', 'TODAS', 0, None)
+        self.denied(403, pages.hours_page, 'hours-practice', 'TODAS', 20, None, role='student')
+        self.denied(404, pages.hours_page, 'hours-practice', 'TODAS', 20, None, role='otherteacher')
+        self.assertEqual(self.call(pages.hours_page, 'hours-practice', 'TODAS', 20, None, role='admin')['total'], 40)
 
     def test_cursor_scopes_filters_roles_resource_and_validation(self):
         self.practice_rows()
