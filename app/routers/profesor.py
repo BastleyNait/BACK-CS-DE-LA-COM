@@ -7,10 +7,12 @@ Rutas: /api/v1/profesor/*
 
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import base64
 import json
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
@@ -385,6 +387,62 @@ def guardar_asistencia(
         "despues": [{"practicanteId": i.practicanteId, "presente": i.presente} for i in payload.items]}, ensure_ascii=False)))
     db.commit()
     return get_asistencia(aula_id, payload.fecha, db, current_user)
+
+
+@router.get("/aulas/{aula_id}/asistencia/historial")
+def historial_asistencia(
+    aula_id: str,
+    limite: int = Query(20, ge=1, le=40),
+    cursor: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Días con asistencia guardada en el aula, del más reciente al más antiguo."""
+    _solo_profesor_o_admin(current_user)
+    _aula_del_profesor(aula_id, current_user, db)
+    total = (
+        db.query(func.count(func.distinct(RegistroAsistencia.fecha)))
+        .filter(RegistroAsistencia.aula_id == aula_id)
+        .scalar()
+    )
+    query = (
+        db.query(
+            RegistroAsistencia.fecha.label("fecha"),
+            func.count(RegistroAsistencia.id).label("registrados"),
+            func.sum(RegistroAsistencia.presente).label("presentes"),
+        )
+        .filter(RegistroAsistencia.aula_id == aula_id)
+        .group_by(RegistroAsistencia.fecha)
+    )
+    scope = sha256(f"asistencia-historial:{current_user.id}:{aula_id}".encode()).hexdigest()
+    if cursor:
+        try:
+            if len(cursor) > 2048:
+                raise ValueError()
+            anchor = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode())
+            if (not isinstance(anchor, list) or len(anchor) != 2 or anchor[0] != scope
+                    or not isinstance(anchor[1], str) or len(anchor[1]) > 64):
+                raise ValueError()
+            anterior = datetime.fromisoformat(anchor[1])
+        except (ValueError, TypeError, json.JSONDecodeError):
+            raise HTTPException(422, "La página no corresponde a esta consulta. Actualiza la lista.") from None
+        query = query.filter(RegistroAsistencia.fecha < anterior)
+    rows = query.order_by(RegistroAsistencia.fecha.desc()).limit(limite + 1).all()
+    shown = rows[:limite]
+    siguiente = None
+    if len(rows) > limite:
+        last = shown[-1]
+        siguiente = base64.urlsafe_b64encode(
+            json.dumps([scope, last.fecha.isoformat()], separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+    return {
+        "items": [
+            {"fecha": row.fecha.date().isoformat(), "presentes": int(row.presentes), "registrados": int(row.registrados)}
+            for row in shown
+        ],
+        "total": total,
+        "siguiente": siguiente,
+    }
 
 
 # ── HU-26 · Revisar y calificar entregas ──────────────────────────────────────

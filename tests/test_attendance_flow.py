@@ -1,4 +1,5 @@
 """Padrón, estado guardado y concurrencia optimista; base SQLite aislada."""
+import base64
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.session import Base
 from app.models.models import Auditoria, Aula, AulaEstadoEnum, Inscripcion, RegistroAsistencia, RoleEnum, User
-from app.routers.profesor import get_asistencia, guardar_asistencia
+from app.routers.profesor import get_asistencia, guardar_asistencia, historial_asistencia
 from app.routers.admin import matricular, desmatricular
 from app.schemas.schemas import GuardarAsistenciaRequest, MatricularRequest
 
@@ -114,6 +115,43 @@ class AttendanceFlowTests(unittest.TestCase):
         audit = json.loads(self.audits()[0].detalle)
         self.assertEqual(len(audit['antes']), 2)
         self.assertEqual(audit['conservadosFueraDelPadron'], ['r3'])
+
+    def history(self, limite=20, cursor=None, user='teacher'): return historial_asistencia('a1', limite, cursor, self.db, self.users[user])
+
+    def test_history_lists_only_saved_days_most_recent_first(self):
+        self.assertEqual(self.history(), {'items': [], 'total': 0, 'siguiente': None})
+        self.read()  # consultar sin guardar no crea registro ni entra al historial
+        self.assertEqual(self.history()['total'], 0)
+        self.save(self.payload(self.read(), {'s1': True, 's2': False}))
+        second = self.save(self.payload(self.read('2026-01-14')))
+        page = self.history()
+        self.assertEqual(page['total'], 2)
+        self.assertEqual(page['siguiente'], None)
+        self.assertEqual([row['fecha'] for row in page['items']], ['2026-01-15', '2026-01-14'])
+        self.assertEqual(page['items'][0], {'fecha': '2026-01-15', 'presentes': 1, 'registrados': 2})
+        self.assertEqual(page['items'][1], {'fecha': '2026-01-14', 'presentes': 2, 'registrados': 2})
+        # Repetir el guardado idéntico no duplica el día del historial.
+        self.save(second)
+        self.assertEqual(self.history()['total'], 2)
+
+    def test_history_pages_by_cursor_and_checks_scope_and_roles(self):
+        self.save(self.payload(self.read()))
+        self.save(self.payload(self.read('2026-01-14')))
+        first = self.history(limite=1)
+        self.assertEqual([row['fecha'] for row in first['items']], ['2026-01-15'])
+        self.assertEqual(first['total'], 2)
+        self.assertNotEqual(first['siguiente'], None)
+        second = self.history(limite=1, cursor=first['siguiente'])
+        self.assertEqual([row['fecha'] for row in second['items']], ['2026-01-14'])
+        self.assertEqual(second['siguiente'], None)
+        self.expect_status(422, self.history, 20, 'cursor-falso')
+        forged = base64.urlsafe_b64encode(json.dumps(['otro-alcance', '2026-01-15T00:00:00+00:00'], separators=(',', ':')).encode()).decode().rstrip('=')
+        self.expect_status(422, self.history, 20, forged)
+        self.expect_status(403, self.history, 20, None, 'supervisor')
+        self.expect_status(403, self.history, 20, None, 's1')
+        self.expect_status(403, self.history, 20, None, 'otherteacher')
+        # Administración consulta el historial del aula del docente.
+        self.assertEqual(self.history(user='admin')['total'], 2)
 
 
 if __name__ == '__main__': unittest.main()
