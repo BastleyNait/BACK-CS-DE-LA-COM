@@ -3,16 +3,18 @@ Gestión de usuarios por el administrador (HU-12).
 Rutas: /api/v1/admin/*
 """
 
+import base64
 import hashlib
 import json
-from sqlalchemy import func, text
+from sqlalchemy import and_, case, func, or_, text
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
+from app.routers.staff_pages import _alphabetic, _name, _search
 from app.models.models import (
     Auditoria,
     Aula,
@@ -465,3 +467,248 @@ def list_auditoria(
         )
         for r in registros
     ]
+
+
+# ── Lecturas paginadas de administración ──────────────────────────────────────
+# Páginas en SQL con totales globales y detalle puntual, como el personal.
+# Solo lectura: crear, cambiar roles/estados/docentes y matricular conservan
+# sus circuitos confirmados y siguen disponibles en las rutas anteriores.
+
+
+def _limite(limite: int) -> None:
+    if not 1 <= limite <= 40:
+        raise HTTPException(422, "El tamaño de página debe estar entre 1 y 40.")
+
+
+def _aulas_admin_base(db: Session):
+    """Proyección de aulas con docente; la misma que el personal consulta."""
+    return db.query(Aula.id, Aula.nombre, Aula.codigo, Aula.descripcion, Aula.periodo, Aula.profesor_id,
+        Aula.estado, Aula.inscritos, _name().label("docente")).join(User, User.id == Aula.profesor_id)
+
+
+def _fila_aula(row) -> dict:
+    return {"id": row.id, "nombre": row.nombre, "codigo": row.codigo, "descripcion": row.descripcion,
+        "periodo": row.periodo, "profesorId": row.profesor_id, "profesorNombre": row.docente,
+        "estado": row.estado.value, "inscritos": row.inscritos}
+
+
+def _filtro_aulas(query, estado: str, q: str):
+    if estado != "TODAS":
+        query = query.filter(Aula.estado == (AulaEstadoEnum.ACTIVA if estado == "ACTIVA" else AulaEstadoEnum.CONCLUIDA))
+    if q:
+        query = query.filter(func.lower(Aula.nombre + " " + Aula.codigo + " " + Aula.periodo + " " + _name()).contains(q, autoescape=True))
+    return query
+
+
+def _estado_aulas(estado: str) -> None:
+    if estado not in ("TODAS", "ACTIVA", "CONCLUIDA"):
+        raise HTTPException(422, "Selecciona todas, activas o concluidas.")
+
+
+@router.get("/usuarios/pagina")
+def usuarios_pagina(rol: str = "TODOS", q: str = "", limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+                    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Directorio de cuentas por páginas con búsqueda y rol; totales globales en SQL."""
+    _solo_admin(current_user)
+    _limite(limite)
+    if rol not in ("TODOS", "ALUMNO", "PROFESOR", "SUPERVISOR", "ADMIN"):
+        raise HTTPException(422, "Selecciona un rol válido.")
+    q = _search(q)
+    query = db.query(User)
+    if rol != "TODOS":
+        query = query.filter(User.role == RoleEnum(rol))
+    if q:
+        query = query.filter(func.lower(User.nombres + " " + User.apellidos + " " + User.email).contains(q, autoescape=True))
+    page = _alphabetic(query, func.lower(User.apellidos + " " + User.nombres), User.id,
+        f"usuarios:{current_user.id}:{rol}:{q}", limite, cursor, lambda row: _to_out(row[0]).model_dump(mode="json"))
+    page["totalDocentes"] = db.query(User).filter(User.role == RoleEnum.PROFESOR).count()
+    return page
+
+
+@router.get("/aulas/pagina")
+def aulas_pagina(estado: str = "TODAS", q: str = "", limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+                 db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Aulas administrables por páginas con búsqueda y estado; aulas activas globales."""
+    _solo_admin(current_user)
+    _limite(limite)
+    _estado_aulas(estado)
+    q = _search(q)
+    query = _filtro_aulas(_aulas_admin_base(db), estado, q)
+    page = _alphabetic(query, func.lower(Aula.nombre), Aula.id,
+        f"aulas-admin:{current_user.id}:{estado}:{q}", limite, cursor, _fila_aula)
+    page["aulasActivas"] = db.query(Aula).filter(Aula.estado == AulaEstadoEnum.ACTIVA).count()
+    return page
+
+
+@router.get("/aulas/{aula_id}/matriculas/pagina")
+def matriculas_pagina(aula_id: str, estado: str = "TODOS", q: str = "", limite: int = Query(20, ge=1, le=40),
+                      cursor: str | None = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Padrón de matrícula por páginas; la revisión protege la escritura confirmada."""
+    _solo_admin(current_user)
+    _limite(limite)
+    aula = _get_aula(aula_id, db)
+    if estado not in ("TODOS", "MATRICULADOS", "SIN_MATRICULA"):
+        raise HTTPException(422, "Selecciona todos, matriculados o sin matrícula.")
+    q = _search(q)
+    inscritos = {i.alumno_id for i in db.query(Inscripcion.alumno_id).filter(Inscripcion.aula_id == aula_id)}
+    query = db.query(User).filter(User.role == RoleEnum.ALUMNO)
+    if estado != "TODOS":
+        en_aula = db.query(Inscripcion.id).filter(Inscripcion.aula_id == aula_id, Inscripcion.alumno_id == User.id).exists()
+        query = query.filter(en_aula if estado == "MATRICULADOS" else ~en_aula)
+    if q:
+        query = query.filter(func.lower(User.nombres + " " + User.apellidos + " " + User.email).contains(q, autoescape=True))
+
+    def pack(row):
+        u = row[0]
+        return {"alumnoId": u.id, "alumnoNombre": f"{u.nombres} {u.apellidos}", "email": u.email, "inscrito": u.id in inscritos}
+
+    page = _alphabetic(query, func.lower(User.apellidos + " " + User.nombres), User.id,
+        f"matriculas:{current_user.id}:{aula_id}:{estado}:{q}", limite, cursor, pack)
+    return {"revision": _roster_revision(db, aula), "aulaId": aula.id, "aulaNombre": aula.nombre,
+        "items": page["items"], "total": page["total"], "siguiente": page["siguiente"],
+        "matriculados": len(inscritos)}
+
+
+@router.get("/aulas/{aula_id}")
+def detalle_aula_admin(aula_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Ficha exacta del aula para gestionar matrículas sin recargar el directorio."""
+    _solo_admin(current_user)
+    aula = _get_aula(aula_id, db)
+    counts = dict(db.query(Inscripcion.aula_id, func.count(func.distinct(Inscripcion.alumno_id)))
+        .filter(Inscripcion.aula_id == aula_id).group_by(Inscripcion.aula_id).all())
+    return _aula_out(aula).model_copy(update={"inscritos": counts.get(aula.id, 0)}).model_dump(mode="json")
+
+
+@router.get("/reportes/pagina")
+def reportes_pagina(estado: str = "TODAS", q: str = "", limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+                    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Resumen global del programa en SQL y aulas por páginas con indicadores por página."""
+    _solo_admin(current_user)
+    _limite(limite)
+    _estado_aulas(estado)
+    q = _search(q)
+    total_practicas = db.query(Practica).count()
+    estados = dict(db.query(Practica.estado, func.count(Practica.id)).group_by(Practica.estado).all())
+    horas_por_practica = (
+        db.query(Practica.id, func.coalesce(func.sum(RegistroHoras.horas), 0).label("horas"))
+        .outerjoin(RegistroHoras, and_(RegistroHoras.practica_id == Practica.id,
+            RegistroHoras.estado_validacion == RegistroHorasEstadoEnum.VALIDADO))
+        .group_by(Practica.id).subquery())
+    promedio = db.query(func.avg(horas_por_practica.columns.horas)).scalar()
+    resumen = {
+        "totalAlumnos": db.query(User).filter(User.role == RoleEnum.ALUMNO).count(),
+        "totalProfesores": db.query(User).filter(User.role == RoleEnum.PROFESOR).count(),
+        "totalAulas": db.query(Aula).count(),
+        "aulasActivas": db.query(Aula).filter(Aula.estado == AulaEstadoEnum.ACTIVA).count(),
+        "practicasEnCurso": total_practicas - estados.get(PracticaEstadoEnum.CERRADA, 0),
+        "practicasCerradas": estados.get(PracticaEstadoEnum.CERRADA, 0),
+        "horasPromedio": round(promedio, 1) if promedio is not None else None,
+    }
+    query = _filtro_aulas(_aulas_admin_base(db), estado, q)
+    page = _alphabetic(query, func.lower(Aula.nombre), Aula.id,
+        f"reportes:{current_user.id}:{estado}:{q}", limite, cursor, _fila_aula)
+    ids = [item["id"] for item in page["items"]]
+    if ids:
+        counts = dict(db.query(Inscripcion.aula_id, func.count(func.distinct(Inscripcion.alumno_id)))
+            .filter(Inscripcion.aula_id.in_(ids)).group_by(Inscripcion.aula_id).all())
+        promedios = dict(db.query(Tarea.aula_id, func.avg(Entrega.nota)).join(Entrega, Entrega.tarea_id == Tarea.id)
+            .filter(Tarea.aula_id.in_(ids), Entrega.nota.is_not(None)).group_by(Tarea.aula_id).all())
+        asistencias = {fila[0]: (fila[1], fila[2] or 0) for fila in db.query(RegistroAsistencia.aula_id,
+            func.count(RegistroAsistencia.id), func.sum(case((RegistroAsistencia.presente == 1, 1), else_=0)))
+            .filter(RegistroAsistencia.aula_id.in_(ids)).group_by(RegistroAsistencia.aula_id).all()}
+        for item in page["items"]:
+            item["aulaId"] = item["id"]
+            item["aulaNombre"] = item["nombre"]
+            item["inscritos"] = counts.get(item["id"], 0)
+            nota = promedios.get(item["id"])
+            item["promedioNotas"] = round(nota, 2) if nota is not None else None
+            registrados, presentes = asistencias.get(item["id"], (0, 0))
+            item["asistenciaPct"] = round(presentes / registrados * 100) if registrados else None
+    return {"resumen": resumen, "items": page["items"], "total": page["total"], "siguiente": page["siguiente"]}
+
+
+def _detalle_asistencia(row) -> dict | None:
+    """Estructura del detalle JSON solo para entradas de asistencia académica."""
+    if row.accion != "ASISTENCIA_ACADEMICA":
+        return None
+    try:
+        value = json.loads(row.detalle)
+        if not isinstance(value, dict) or not isinstance(value.get("aulaId"), str):
+            return None
+        filas = []
+        for key in ("antes", "despues"):
+            grupo = value.get(key)
+            if not isinstance(grupo, list) or not all(isinstance(f, dict) and isinstance(f.get("practicanteId"), str) for f in grupo):
+                return None
+            filas.extend(grupo)
+        return value if filas else None
+    except ValueError:
+        return None
+
+
+@router.get("/auditoria/pagina")
+def auditoria_pagina(categoria: str = "TODAS", q: str = "", limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+                     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Bitácora por páginas, de la más reciente a la más antigua; nombres de asistencia resueltos en el servidor."""
+    _solo_admin(current_user)
+    _limite(limite)
+    if categoria not in ("TODAS", "ASISTENCIA", "HORAS", "ADMIN"):
+        raise HTTPException(422, "Selecciona toda la actividad, asistencia, horas o administración.")
+    q = _search(q)
+    query = db.query(Auditoria)
+    if categoria == "ASISTENCIA":
+        query = query.filter(Auditoria.accion == "ASISTENCIA_ACADEMICA")
+    elif categoria == "HORAS":
+        query = query.filter(Auditoria.accion.like("HORAS_%"))
+    elif categoria == "ADMIN":
+        query = query.filter(Auditoria.accion != "ASISTENCIA_ACADEMICA", Auditoria.accion.notlike("HORAS_%"))
+    if q:
+        query = query.filter(func.lower(Auditoria.user_nombre + " " + Auditoria.accion + " " + Auditoria.detalle).contains(q, autoescape=True))
+    total = query.order_by(None).count()
+    scope = hashlib.sha256(f"auditoria:{current_user.id}:{categoria}:{q}".encode()).hexdigest()
+    if cursor:
+        try:
+            if len(cursor) > 2048:
+                raise ValueError()
+            anchor = json.loads(base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True))
+            if (not isinstance(anchor, list) or len(anchor) != 3 or anchor[0] != scope
+                    or not isinstance(anchor[1], str) or len(anchor[1]) > 50
+                    or not isinstance(anchor[2], str) or not 1 <= len(anchor[2]) <= 255):
+                raise ValueError()
+            previa = datetime.fromisoformat(anchor[1]) if anchor[1] else None
+        except (ValueError, TypeError, json.JSONDecodeError):
+            raise HTTPException(422, "La página no corresponde a esta consulta. Actualiza la lista.") from None
+        if previa is None:
+            query = query.filter(and_(Auditoria.fecha.is_(None), Auditoria.id < anchor[2]))
+        else:
+            query = query.filter(or_(Auditoria.fecha < previa, and_(Auditoria.fecha == previa, Auditoria.id < anchor[2]),
+                Auditoria.fecha.is_(None)))
+    rows = query.order_by(Auditoria.fecha.desc().nullslast(), Auditoria.id.desc()).limit(limite + 1).all()
+    shown, siguiente = rows[:limite], None
+    if len(rows) > limite:
+        last = shown[-1]
+        siguiente = base64.urlsafe_b64encode(json.dumps([scope, last.fecha.isoformat() if last.fecha else "", last.id],
+            separators=(",", ":")).encode()).decode().rstrip("=")
+    aulas_ids, alumnos_ids, detalles = set(), set(), {}
+    for row in shown:
+        parsed = _detalle_asistencia(row)
+        detalles[row.id] = parsed
+        if parsed:
+            aulas_ids.add(parsed["aulaId"])
+            alumnos_ids.update(f["practicanteId"] for f in parsed["antes"] + parsed["despues"])
+    nombres_aulas = dict(db.query(Aula.id, Aula.nombre).filter(Aula.id.in_(aulas_ids)).all()) if aulas_ids else {}
+    nombres_alumnos = dict(db.query(User.id, User.nombres + " " + User.apellidos).filter(User.id.in_(alumnos_ids)).all()) if alumnos_ids else {}
+    items = []
+    for row in shown:
+        parsed = detalles[row.id]
+        estudiantes, vistos = [], set()
+        if parsed:
+            for fila in parsed["antes"] + parsed["despues"]:
+                if fila["practicanteId"] not in vistos:
+                    vistos.add(fila["practicanteId"])
+                    estudiantes.append({"id": fila["practicanteId"], "nombre": nombres_alumnos.get(fila["practicanteId"], "")})
+        items.append({"id": row.id, "userNombre": row.user_nombre, "accion": row.accion, "detalle": row.detalle,
+            "fecha": row.fecha.isoformat() if row.fecha else "",
+            "aulaNombre": nombres_aulas.get(parsed["aulaId"]) if parsed else None,
+            "estudiantes": estudiantes})
+    return {"items": items, "total": total, "siguiente": siguiente}

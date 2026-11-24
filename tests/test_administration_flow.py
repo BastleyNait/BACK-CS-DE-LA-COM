@@ -1,12 +1,14 @@
 """Gestión académica y seguridad; SQLite aislado, sin datos reales."""
+import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.session import Base
-from app.models.models import User, RoleEnum, Aula, AulaEstadoEnum, Inscripcion, Auditoria, Practica, RegistroHoras, RegistroHorasEstadoEnum
-from app.routers.admin import crear_aula_admin, update_rol, cambiar_estado_aula, asignar_profesor, get_matriculas, establecer_matricula, reportes
+from app.models.models import User, RoleEnum, Aula, AulaEstadoEnum, Entrega, Inscripcion, Auditoria, Practica, RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum, Tarea
+from app.routers.admin import crear_aula_admin, update_rol, cambiar_estado_aula, asignar_profesor, get_matriculas, establecer_matricula, reportes, usuarios_pagina, aulas_pagina, matriculas_pagina, detalle_aula_admin, reportes_pagina, auditoria_pagina
 from app.routers.aulas import create_aula
 from app.routers.profesor import seguimiento_practicante
 from app.routers.auth import register
@@ -76,5 +78,93 @@ class AdministrationTests(unittest.TestCase):
     def test_strict_input(self):
         with self.assertRaises(ValidationError):EstablecerMatriculaRequest(inscrito=1,revision='a'*64)
         with self.assertRaises(ValidationError):CreateAulaRequest(nombre=' ',codigo='X1',periodo='TEST')
+
+    def test_paged_admin_reads_with_global_totals_and_scopes(self):
+        fecha = datetime(2026, 10, 24, tzinfo=timezone.utc)
+        for i in range(24):
+            self.db.add(Aula(id=f'pa-{i:02}', nombre=f'Aula paginada {i:02}', codigo=f'PA-{i:02}', periodo='TEST',
+                profesor_id='teacher', estado=AulaEstadoEnum.CONCLUIDA if i % 3 == 0 else AulaEstadoEnum.ACTIVA))
+            self.db.add(User(id=f'pu-{i:02}', nombres=f'Paginado {i:02}', apellidos='Estudiante',
+                email=f'pu{i:02}@unsa.edu.pe', hashed_password='unused', role=RoleEnum.ALUMNO))
+            self.db.add(Auditoria(id=f'au-{i:02}', user_id='admin', user_nombre='Admin Prueba', accion='ESTADO_AULA',
+                detalle=f'Cambio {i:02}', fecha=fecha - timedelta(days=i)))
+        self.db.add(Auditoria(id='au-att', user_id='admin', user_nombre='Admin Prueba', accion='ASISTENCIA_ACADEMICA',
+            detalle=json.dumps({'aulaId': 'a', 'fecha': '2026-10-20', 'antes': [{'id': 'x1', 'practicanteId': 'student', 'presente': True}],
+                'despues': [{'practicanteId': 'student', 'presente': False}]}), fecha=fecha))
+        self.db.add(Auditoria(id='au-horas', user_id='admin', user_nombre='Admin Prueba', accion='HORAS_VALIDACION',
+            detalle='Validacion de actividad h-1: 2 h; VALIDADO.', fecha=fecha))
+        self.db.add(Tarea(id='tp', aula_id='a', titulo='Informe', descripcion=''))
+        self.db.add(Entrega(id='ent1', tarea_id='tp', alumno_id='student', nota=16))
+        self.db.add(Entrega(id='ent2', tarea_id='tp', alumno_id='student2', nota=20))
+        self.db.add(RegistroAsistencia(id='as1', practicante_id='student', aula_id='a', fecha=fecha, presente=1))
+        self.db.add(RegistroAsistencia(id='as2', practicante_id='student2', aula_id='a', fecha=fecha, presente=0))
+        self.db.add(RegistroHoras(id='hr', practica_id='p', horas=8, descripcion='Prueba', estado_validacion=RegistroHorasEstadoEnum.VALIDADO))
+        self.db.commit()
+        admin = self.users['admin']
+
+        users = usuarios_pagina('TODOS', '', 20, None, self.db, admin)
+        self.assertEqual((users['total'], len(users['items']), users['totalDocentes']), (31, 20, 2))
+        self.assertNotEqual(users['siguiente'], None)
+        tail = usuarios_pagina('TODOS', '', 20, users['siguiente'], self.db, admin)
+        self.assertEqual((tail['total'], len(tail['items']), tail['siguiente']), (31, 11, None))
+        self.assertEqual(len({row['id'] for row in users['items'] + tail['items']}), 31)
+        self.assertEqual(usuarios_pagina('ALUMNO', '', 20, None, self.db, admin)['total'], 27)
+        profesores = usuarios_pagina('PROFESOR', '', 20, None, self.db, admin)
+        self.assertEqual((profesores['total'], profesores['totalDocentes']), (2, 2))
+        self.assertEqual(usuarios_pagina('TODOS', 'Paginado 03', 20, None, self.db, admin)['total'], 1)
+        self.expect(422, usuarios_pagina, 'PROFESOR', '', 20, users['siguiente'], self.db, admin)
+        self.expect(422, usuarios_pagina, 'INVALID', '', 20, None, self.db, admin)
+        self.expect(422, usuarios_pagina, 'TODOS', '', 0, None, self.db, admin)
+        self.expect(403, usuarios_pagina, 'TODOS', '', 20, None, self.db, self.users['student'])
+
+        aulas = aulas_pagina('TODAS', '', 20, None, self.db, admin)
+        self.assertEqual((aulas['total'], len(aulas['items']), aulas['aulasActivas']), (25, 20, 17))
+        self.assertEqual(aulas['items'][0]['nombre'], 'Aula')
+        rest = aulas_pagina('TODAS', '', 20, aulas['siguiente'], self.db, admin)
+        self.assertEqual((rest['total'], len(rest['items']), rest['siguiente']), (25, 5, None))
+        concluidas = aulas_pagina('CONCLUIDA', '', 20, None, self.db, admin)
+        self.assertEqual((concluidas['total'], concluidas['aulasActivas']), (8, 17))
+        self.assertEqual(aulas_pagina('ACTIVA', '', 20, None, self.db, admin)['total'], 17)
+        self.assertEqual(aulas_pagina('TODAS', 'PA-13', 20, None, self.db, admin)['total'], 1)
+        self.expect(422, aulas_pagina, 'ACTIVA', '', 20, aulas['siguiente'], self.db, admin)
+        self.expect(422, aulas_pagina, 'INVALID', '', 20, None, self.db, admin)
+        self.expect(403, aulas_pagina, 'TODAS', '', 20, None, self.db, self.users['supervisor'])
+
+        detail = detalle_aula_admin('a', self.db, admin)
+        self.assertEqual((detail['id'], detail['inscritos'], detail['descripcion'], detail['estado']), ('a', 1, '', 'ACTIVA'))
+        self.expect(404, detalle_aula_admin, 'missing', self.db, admin)
+
+        roster = matriculas_pagina('a', 'TODOS', '', 20, None, self.db, admin)
+        self.assertEqual((roster['revision'], roster['matriculados'], roster['total']), (get_matriculas('a', self.db, admin).revision, 1, 27))
+        matriculados = matriculas_pagina('a', 'MATRICULADOS', '', 20, None, self.db, admin)
+        self.assertEqual((matriculados['total'], matriculados['items'][0]['alumnoId'], matriculados['items'][0]['inscrito']), (1, 'student', True))
+        self.assertEqual(matriculas_pagina('a', 'SIN_MATRICULA', '', 20, None, self.db, admin)['total'], 26)
+        self.assertEqual(matriculas_pagina('a', 'TODOS', 'student2', 20, None, self.db, admin)['total'], 1)
+        self.expect(422, matriculas_pagina, 'a', 'INVALID', '', 20, None, self.db, admin)
+        self.expect(404, matriculas_pagina, 'missing', 'TODOS', '', 20, None, self.db, admin)
+        self.expect(403, matriculas_pagina, 'a', 'TODOS', '', 20, None, self.db, self.users['teacher'])
+
+        report = reportes_pagina('TODAS', '', 20, None, self.db, admin)
+        self.assertEqual(report['resumen'], {'totalAlumnos': 27, 'totalProfesores': 2, 'totalAulas': 25, 'aulasActivas': 17,
+            'practicasEnCurso': 1, 'practicasCerradas': 0, 'horasPromedio': 8.0})
+        first = next(row for row in report['items'] if row['id'] == 'a')
+        self.assertEqual((first['inscritos'], first['promedioNotas'], first['asistenciaPct']), (1, 18.0, 50))
+        filtrado = reportes_pagina('CONCLUIDA', '', 20, None, self.db, admin)
+        self.assertEqual((filtrado['total'], filtrado['resumen']), (8, report['resumen']))
+        self.expect(422, reportes_pagina, 'ACTIVA', '', 20, report['siguiente'], self.db, admin)
+        self.expect(403, reportes_pagina, 'TODAS', '', 20, None, self.db, self.users['student'])
+
+        audit = auditoria_pagina('TODAS', '', 20, None, self.db, admin)
+        self.assertEqual((audit['total'], len(audit['items'])), (26, 20))
+        rest = auditoria_pagina('TODAS', '', 20, audit['siguiente'], self.db, admin)
+        self.assertEqual((rest['total'], len(rest['items']), rest['siguiente']), (26, 6, None))
+        attendance = auditoria_pagina('ASISTENCIA', '', 20, None, self.db, admin)['items'][0]
+        self.assertEqual((attendance['aulaNombre'], attendance['estudiantes']), ('Aula', [{'id': 'student', 'nombre': 'student Prueba'}]))
+        self.assertEqual(auditoria_pagina('HORAS', '', 20, None, self.db, admin)['total'], 1)
+        self.assertEqual(auditoria_pagina('ADMIN', '', 20, None, self.db, admin)['total'], 24)
+        self.assertEqual(auditoria_pagina('TODAS', 'Cambio 05', 20, None, self.db, admin)['total'], 1)
+        self.expect(422, auditoria_pagina, 'ASISTENCIA', '', 20, audit['siguiente'], self.db, admin)
+        self.expect(422, auditoria_pagina, 'INVALID', '', 20, None, self.db, admin)
+        self.expect(403, auditoria_pagina, 'TODAS', '', 20, None, self.db, self.users['student'])
 
 if __name__=='__main__':unittest.main()
