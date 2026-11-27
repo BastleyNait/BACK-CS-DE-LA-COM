@@ -13,3 +13,10 @@ Respuesta de mensaje: id, aulaId, remitenteId/nombre, destinatarioId, texto, mio
 Cada envío efectivo genera MENSAJE_ENVIADO con metadatos de las cuentas y aula; se excluye el texto privado. No se copian adjuntos ni se envía push, correo o comunicación a servicios externos. La app no presenta esto como tiempo real.
 
 Pruebas: python -m unittest discover -s tests -p test_direct_messages.py (7 casos), test:mensajes y recorrido real aislado documentado en la app. Conservar secretos y evidencias fuera de Git. Integración/publicación de producción sigue separada.
+
+## Contactos por páginas y contacto exacto (incremento 35 de la app)
+
+- `GET /equipo/aulas/{id}/contactos/pagina?q=&sinLeer=false&limite=20&cursor=`: solo PROFESOR responsable del aula (ALUMNO, SUPERVISOR y ADMIN reciben 403). Devuelve los alumnos matriculados en orden alfabético (apellidos, nombres, id) con `noLeidos` por contacto calculado en SQL, `total` del filtro y `noLeidos` global del aula (solo de remitentes matriculados). `q` (≤120, si se pasa responde 422) busca por nombre y correo; `sinLeer=true` deja solo los contactos con mensajes recibidos sin leer. El cursor queda ligado a usuario, aula, búsqueda y filtro. Cada fila incluye `id` igual a `userId`.
+- `GET /aulas/{id}/contactos/{otro_id}`: contacto exacto para abrir una conversación, para alumno y docente, con las mismas reglas de vínculo de `_peer` (403 fuera del vínculo, 404 si no existe). Sustituye la descarga de la lista completa en el cliente.
+
+Ninguna de las dos lecturas marca mensajes como leídos. La lista completa `/aulas/{id}/contactos` se conserva por compatibilidad. Pruebas: `test_contact_pages_alphabetic_unread_filter_and_exact_contact` en `tests/test_staff_pages.py`.

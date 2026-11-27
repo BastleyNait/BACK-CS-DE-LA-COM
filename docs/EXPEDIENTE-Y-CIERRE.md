@@ -33,3 +33,7 @@ El PDF se genera con ReportLab y escapa el texto antes de construir los párrafo
 Validación automática reservada al final del desarrollo, por indicación del usuario.
 
 Al finalizar: 8 pruebas de `test_expediente_flow.py` y 8 de `test_hours_flow.py` aprobadas con SQLite aislado, sin escrituras en Supabase. TypeScript de la app correcto. La migración aditiva se aplicó al esquema de pruebas sin reinicializar ni cargar semilla.
+
+## Lista de expedientes del personal por páginas (incremento 35 de la app)
+
+La lista de expedientes del personal usa `GET /equipo/practicas/pagina`, que ahora acepta `aulaId` y `alumnoId` opcionales (≤255; dentro del ámbito del cursor) para abrir el expediente desde el seguimiento de un alumno concreto. Se mantienen la visibilidad por rol de `visible_practices` y los filtros `estado` y `q`. Prueba: `test_practice_pages_filter_by_class_and_student`.
