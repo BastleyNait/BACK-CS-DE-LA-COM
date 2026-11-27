@@ -62,6 +62,12 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     return session_response(db, user)
 
 
+@router.post("/renovar", response_model=LoginResponse)
+def renovar(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Sesión deslizante: un token vigente (misma versión de seguridad) obtiene uno nuevo."""
+    return session_response(db, current_user)
+
+
 @router.post("/register", response_model=UserOut, status_code=201)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
     if password_roles() and "ALUMNO" not in password_roles():

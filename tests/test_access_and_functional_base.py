@@ -92,6 +92,14 @@ class FunctionalBaseTests(unittest.TestCase):
         self.assertEqual(first.user.id, again.user.id)
         self.assertEqual(self.db.query(IdentidadGoogle).count(), 1)
 
+    def test_renewal_returns_fresh_token_and_respects_revocation(self):
+        session = auth.login(LoginRequest(email='alumno@unsa.edu.pe', password=self.password), self.db)
+        user = get_current_user(HTTPAuthorizationCredentials(scheme='Bearer', credentials=session.token), self.db)
+        renewed = auth.renovar(user, self.db)
+        self.assertEqual(get_current_user(HTTPAuthorizationCredentials(scheme='Bearer', credentials=renewed.token), self.db).id, 'alumno')
+        from app.core.security import decode_token
+        self.assertIn('iat', decode_token(renewed.token))
+
     def test_google_only_mode_keeps_password_for_supervisors(self):
         with patch.object(settings, 'PASSWORD_LOGIN_ROLES', 'SUPERVISOR'):
             self.expect(403, auth.login, LoginRequest(email='alumno@unsa.edu.pe', password=self.password), self.db)
