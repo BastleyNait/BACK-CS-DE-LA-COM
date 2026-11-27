@@ -5,8 +5,9 @@ from fastapi import HTTPException
 from sqlalchemy import event
 from app.models.models import (Aula, AulaEstadoEnum, CambioTarea, Empresa, Entrega, EntregaEstadoEnum, Inscripcion, Meta,
     MetaTipoEnum, Practica, PracticaEstadoEnum, RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum,
-    RoleEnum, Supervisor, Tarea, User, VersionEntrega)
+    MensajeDirecto, RoleEnum, Supervisor, Tarea, User, VersionEntrega)
 from app.routers import staff_pages as pages
+from app.routers.comunicacion import contacto
 import test_direct_messages as fixture
 
 
@@ -150,6 +151,42 @@ class StaffPagesTests(unittest.TestCase):
         self.db.get(Supervisor, 'sup').user_id = None; self.db.commit()
         self.assertEqual(self.call(pages.practices, 'TODAS', '', 20, None, role='supervisor')['total'], 0)
         self.denied(403, pages.practices, 'TODAS', '', 20, None, role='student')
+
+    def test_practice_pages_filter_by_class_and_student(self):
+        self.practice_rows()
+        self.assertEqual(self.call(pages.practices, 'TODAS', '', 20, None, aulaId='a')['total'], 45)
+        only = self.call(pages.practices, 'TODAS', '', 20, None, aulaId='a', alumnoId='u010')
+        self.assertEqual([row['id'] for row in only['items']], ['p010'])
+        self.assertEqual(self.call(pages.practices, 'TODAS', '', 20, None, aulaId='foreign')['total'], 0)
+        first = self.call(pages.practices, 'TODAS', '', 20, None, aulaId='a')
+        self.denied(422, pages.practices, 'TODAS', '', 20, first['siguiente'], alumnoId='u010')
+        self.denied(422, pages.practices, 'TODAS', '', 20, None, aulaId='x' * 256)
+
+    def test_contact_pages_alphabetic_unread_filter_and_exact_contact(self):
+        self.roster()
+        now = datetime.now(timezone.utc)
+        for i, (sender, read) in enumerate([('u010', 0), ('u010', 0), ('u020', 0), ('u030', 1), ('student', 0)]):
+            self.db.add(MensajeDirecto(id=f'm{i}', aula_id='a', remitente_id=sender, destinatario_id='teacher', texto='Hola', leido=read, created_at=now))
+        self.db.add(MensajeDirecto(id='mine', aula_id='a', remitente_id='teacher', destinatario_id='u040', texto='Hola', leido=0, created_at=now))
+        self.db.commit()
+        items = self.all_pages(lambda cursor: self.call(pages.contacts, 'a', '', False, 20, cursor))
+        self.assertEqual([row['userId'] for row in items], [f'u{i:03}' for i in range(45)])
+        self.assertEqual(items[10]['noLeidos'], 2); self.assertEqual(items[40]['noLeidos'], 0)
+        first = self.call(pages.contacts, 'a', '', False, 20, None)
+        self.assertEqual(first['noLeidos'], 3)
+        unread = self.call(pages.contacts, 'a', '', True, 20, None)
+        self.assertEqual(([row['userId'] for row in unread['items']], unread['total'], unread['noLeidos']), (['u010', 'u020'], 2, 3))
+        self.assertEqual(self.call(pages.contacts, 'a', '044@unsa', False, 20, None)['total'], 1)
+        self.denied(422, pages.contacts, 'a', '', True, 20, first['siguiente'])
+        self.denied(422, pages.contacts, 'a', 'x' * 121, False, 20, None)
+        for role in ['student', 'admin', 'supervisor']:
+            self.denied(403, pages.contacts, 'a', '', False, 20, None, role=role)
+        self.denied(403, pages.contacts, 'a', '', False, 20, None, role='otherteacher')
+        exact = contacto('a', 'u010', self.db, self.users['teacher'])
+        self.assertEqual((exact.userId, exact.noLeidos, exact.aulaNombre), ('u010', 2, 'Aula'))
+        with self.assertRaises(HTTPException) as failure:
+            contacto('a', 'student', self.db, self.users['teacher'])
+        self.assertEqual(failure.exception.status_code, 403)
 
     def test_teacher_task_pages_stay_projected_and_detail_is_exact(self):
         date = datetime(2026, 10, 24, tzinfo=timezone.utc)

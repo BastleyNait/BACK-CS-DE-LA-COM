@@ -217,6 +217,16 @@ def list_contactos(aula_id: str, db: Session = Depends(get_db), current_user: Us
     return sorted([ContactoOut(userId=u.id, nombre=_nombre(u), aulaId=aula.id, aulaNombre=aula.nombre, noLeidos=counts.get(u.id, 0)) for u in users], key=lambda c: (-c.noLeidos, c.nombre, c.userId))
 
 
+@router.get("/aulas/{aula_id}/contactos/{otro_id}", response_model=ContactoOut)
+def contacto(aula_id: str, otro_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Contacto exacto para abrir una conversación sin descargar la lista completa."""
+    aula = _aula_con_acceso(aula_id, current_user, db)
+    peer = _peer(aula, current_user, otro_id, db)
+    unread = db.query(func.count(MensajeDirecto.id)).filter(MensajeDirecto.aula_id == aula_id, MensajeDirecto.remitente_id == otro_id,
+        MensajeDirecto.destinatario_id == current_user.id, MensajeDirecto.leido == 0).scalar()
+    return ContactoOut(userId=peer.id, nombre=_nombre(peer), aulaId=aula.id, aulaNombre=aula.nombre, noLeidos=unread)
+
+
 @router.get("/aulas/{aula_id}/mensajes/{otro_id}", response_model=list[MensajeDirectoOut])
 def conversacion(aula_id: str, otro_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     aula = _aula_con_acceso(aula_id, current_user, db)

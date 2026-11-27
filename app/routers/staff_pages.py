@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.deps import get_current_user
 from app.core.practice_access import require_practice, visible_practices
 from app.db.session import get_db
-from app.models.models import (Aula, CambioTarea, Entrega, Inscripcion, Meta, MetaTipoEnum, Practica, PracticaEstadoEnum,
+from app.models.models import (Aula, CambioTarea, Entrega, Inscripcion, MensajeDirecto, Meta, MetaTipoEnum, Practica, PracticaEstadoEnum,
     RegistroAsistencia, RegistroHoras, RegistroHorasEstadoEnum, Tarea, User, VersionEntrega)
 from app.routers.aulas import _aula_to_out
 from app.routers.profesor import _solo_profesor_o_admin, _aula_del_profesor
 from app.routers.module_pages import _page
+from app.routers.comunicacion import _aula_con_acceso
 from app.schemas.schemas import EntregaProfesorOut
 
 router = APIRouter(prefix='/equipo', tags=['personal-paginado'])
@@ -256,18 +257,25 @@ def _practice_summary(row):
 
 @router.get('/practicas/pagina')
 def practices(estado: str = 'TODAS', q: str = '', limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
-              db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+              db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+              aulaId: str = '', alumnoId: str = ''):
     _staff_practice(current_user)
     if estado not in ('TODAS', 'ABIERTAS', 'CERRADAS'):
         raise HTTPException(422, 'Selecciona todas, abiertas o cerradas.')
+    if len(aulaId) > 255 or len(alumnoId) > 255:
+        raise HTTPException(422, 'El filtro de aula o alumno no es válido.')
     q = _search(q)
     query = _practice_query(db, current_user)
+    if aulaId:
+        query = query.filter(Practica.aula_id == aulaId)
+    if alumnoId:
+        query = query.filter(Practica.practicante_id == alumnoId)
     if estado != 'TODAS':
         query = query.filter(Practica.estado == PracticaEstadoEnum.CERRADA if estado == 'CERRADAS' else Practica.estado != PracticaEstadoEnum.CERRADA)
     if q:
         query = query.filter(func.lower(_name() + ' ' + Aula.nombre + ' ' + Practica.periodo).contains(q, autoescape=True))
     return _alphabetic(query, func.lower(User.apellidos + ' ' + User.nombres), Practica.id,
-        f'practicas:{current_user.id}:{estado}:{q}', limite, cursor, _practice_summary)
+        f'practicas:{current_user.id}:{estado}:{q}:{aulaId}:{alumnoId}', limite, cursor, _practice_summary)
 
 
 @router.get('/practicas/{practica_id}')
@@ -332,3 +340,33 @@ def hours_page(practica_id: str, estado: str = 'TODAS', limite: int = Query(20, 
         'horasValidadas': sums.get(RegistroHorasEstadoEnum.VALIDADO, 0),
         'horasPendientes': sums.get(RegistroHorasEstadoEnum.PENDIENTE, 0),
         'horasRechazadas': sums.get(RegistroHorasEstadoEnum.RECHAZADO, 0)}
+
+
+@router.get('/aulas/{aula_id}/contactos/pagina')
+def contacts(aula_id: str, q: str = '', sinLeer: bool = False, limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+             db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Contactos del docente responsable: alumnos matriculados, orden alfabético y no leídos en SQL."""
+    if current_user.role.value != 'PROFESOR':
+        raise HTTPException(403, 'La lista paginada de contactos corresponde al docente responsable.')
+    aula = _aula_con_acceso(aula_id, current_user, db)
+    q = _search(q)
+    unread = db.query(func.count(MensajeDirecto.id)).filter(MensajeDirecto.aula_id == aula_id,
+        MensajeDirecto.destinatario_id == current_user.id, MensajeDirecto.remitente_id == User.id,
+        MensajeDirecto.leido == 0).correlate(User).scalar_subquery()
+    base = db.query(User.id, _name().label('nombre'), unread.label('no_leidos')).join(Inscripcion, Inscripcion.alumno_id == User.id).filter(
+        Inscripcion.aula_id == aula_id, User.role == 'ALUMNO')
+    total_unread = db.query(func.count(MensajeDirecto.id)).filter(MensajeDirecto.aula_id == aula_id,
+        MensajeDirecto.destinatario_id == current_user.id, MensajeDirecto.leido == 0,
+        MensajeDirecto.remitente_id.in_(select(Inscripcion.alumno_id).where(Inscripcion.aula_id == aula_id))).scalar()
+    query = base
+    if q:
+        query = query.filter(func.lower(_name() + ' ' + User.email).contains(q, autoescape=True))
+    if sinLeer:
+        query = query.filter(unread > 0)
+    result = _alphabetic(query, func.lower(User.apellidos + ' ' + User.nombres), User.id,
+        f'contactos:{current_user.id}:{aula_id}:{q}:{sinLeer}', limite, cursor,
+        lambda row: {'userId': row.id, 'nombre': row.nombre, 'aulaId': aula.id, 'aulaNombre': aula.nombre, 'noLeidos': row.no_leidos})
+    for item in result['items']:
+        item['id'] = item['userId']
+    result['noLeidos'] = total_unread
+    return result
