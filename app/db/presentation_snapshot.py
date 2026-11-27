@@ -1,6 +1,7 @@
 """Copia privada de datos ficticios para una entrega; nunca reemplaza un esquema."""
 import argparse
 import json
+import os
 import secrets
 import sys
 from datetime import datetime, timezone, timedelta
@@ -9,10 +10,12 @@ from sqlalchemy import MetaData, Enum, String, cast, insert, select, text, func,
 from app.core.config import settings
 from app.db.test_environment import check_test_target
 
-SCHEMA = "ssp_presentacion_20261023"
-VERSION = "0.2.0-avance.20261023"
-WEB_PROJECT = "practicascc-avance-23oct-2026"
-API_PROJECT = "practicascc-api-avance-23oct-2026"
+# Cada entrega usa su propio esquema y proyectos; por defecto, los del 23 de octubre.
+SCHEMA = os.getenv("SNAPSHOT_SCHEMA", "ssp_presentacion_20261023")
+VERSION = os.getenv("SNAPSHOT_VERSION", "0.2.0-avance.20261023")
+WEB_PROJECT = os.getenv("SNAPSHOT_WEB_PROJECT", "practicascc-avance-23oct-2026")
+API_PROJECT = os.getenv("SNAPSHOT_API_PROJECT", "practicascc-api-avance-23oct-2026")
+TAG = SCHEMA.rsplit("_", 1)[-1]
 EXCLUDED = {"identidades_google", "recuperaciones_cuentas", "auditoria"}
 PHASE = 'preflight'
 
@@ -124,18 +127,18 @@ def add_review_examples(conn, metadata):
     if not aula: raise ValueError('No hay aula ficticia activa para el recorrido.')
     due = datetime.now(timezone.utc) + timedelta(days=14)
     for suffix,title in [('pendiente','Demostración · Informe semanal'),('revision','Demostración · Crónica para revisión')]:
-        task_id = f'presentacion-{suffix}-20261023'
+        task_id = f'presentacion-{suffix}-{TAG}'
         conn.execute(table('tareas').insert().values(id=task_id,aula_id=aula,titulo=title,
             descripcion='Contenido ficticio para revisar el avance. Describe las actividades, los resultados y las fuentes utilizadas.',fecha_limite=due))
-        conn.execute(table('notificaciones').insert().values(id=f'presentacion-aviso-{suffix}',user_id=student,tipo='TAREA_ASIGNADA',
+        conn.execute(table('notificaciones').insert().values(id=f'presentacion-aviso-{suffix}-{TAG}',user_id=student,tipo='TAREA_ASIGNADA',
             titulo='Nueva tarea de demostración',mensaje=title,destino={'tipo':'TAREA','aulaId':aula,'tareaId':task_id},leida=0))
         if suffix == 'revision':
-            conn.execute(table('entregas').insert().values(id='presentacion-entrega-20261023',tarea_id=task_id,alumno_id=student,
+            conn.execute(table('entregas').insert().values(id=f'presentacion-entrega-{TAG}',tarea_id=task_id,alumno_id=student,
                 descripcion='Crónica ficticia preparada para revisar el circuito de calificación del docente.',comentario='Datos de presentación.',estado='ENTREGADA'))
     practice = conn.execute(select(table('practicas').c.id).where(table('practicas').c.practicante_id == student,
         table('practicas').c.estado != 'CERRADA')).scalars().first()
     if practice:
-        conn.execute(table('registro_horas').insert().values(id='presentacion-horas-20261023',practica_id=practice,
+        conn.execute(table('registro_horas').insert().values(id=f'presentacion-horas-{TAG}',practica_id=practice,
             fecha=datetime.now(timezone.utc),horas=2,descripcion='Demostración · producción de contenido institucional.',estado_validacion='PENDIENTE'))
 
 
