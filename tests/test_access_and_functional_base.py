@@ -92,6 +92,18 @@ class FunctionalBaseTests(unittest.TestCase):
         self.assertEqual(first.user.id, again.user.id)
         self.assertEqual(self.db.query(IdentidadGoogle).count(), 1)
 
+    def test_google_only_mode_keeps_password_for_supervisors(self):
+        with patch.object(settings, 'PASSWORD_LOGIN_ROLES', 'SUPERVISOR'):
+            self.expect(403, auth.login, LoginRequest(email='alumno@unsa.edu.pe', password=self.password), self.db)
+            self.expect(403, auth.login, LoginRequest(email='admin@unsa.edu.pe', password=self.password), self.db)
+            self.assertEqual(auth.login(LoginRequest(email='supervisor@unsa.edu.pe', password=self.password), self.db).user.role, 'SUPERVISOR')
+            self.assertEqual(auth.capacidades_auth()['contrasenaRoles'], ['SUPERVISOR'])
+            claims = {'sub': 'docente-subject', 'email': 'docente@unsa.edu.pe'}
+            with patch.object(auth, 'verify_google', return_value=claims):
+                linked = auth.google_login(auth.GoogleRequest(idToken='token-ficticio'), self.db)
+            self.assertEqual((linked.user.id, linked.user.role), ('docente', 'PROFESOR'))
+        self.assertIsNone(auth.capacidades_auth()['contrasenaRoles'])
+
     def test_google_new_account_has_only_student_role(self):
         claims = {'sub': 'nuevo-subject', 'email': 'nueva.cuenta@unsa.edu.pe', 'given_name': 'Nueva', 'family_name': 'Cuenta', 'role': 'ADMIN'}
         with patch.object(auth, 'verify_google', return_value=claims):

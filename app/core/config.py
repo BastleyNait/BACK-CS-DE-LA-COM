@@ -3,7 +3,7 @@ import os
 import re
 from pydantic_settings import BaseSettings
 from typing import List, Literal
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 
 
 class Settings(BaseSettings):
@@ -29,11 +29,26 @@ class Settings(BaseSettings):
     TEST_SEED_PASSWORD: SecretStr = SecretStr("")
     PRESENTATION_VERSION: str = ""
     GOOGLE_CLIENT_IDS: str = ""
+    # Roles que pueden ingresar con contraseña (CSV). Vacío: todos. Con Google UNSA activo se usa "SUPERVISOR",
+    # porque los supervisores de centros externos no tienen cuenta institucional.
+    PASSWORD_LOGIN_ROLES: str = ""
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: SecretStr = SecretStr("")
     SMTP_FROM: str = ""
+    # Resend por SMTP: basta con la API key. Sin dominio propio verificado, Resend solo entrega
+    # al correo dueño de la cuenta; RESEND_FROM cambia el remitente cuando se verifique un dominio.
+    RESEND_API_KEY: SecretStr = SecretStr("")
+    RESEND_FROM: str = "PrácticasCC <onboarding@resend.dev>"
+
+    @model_validator(mode="after")
+    def resend_smtp(self):
+        key = self.RESEND_API_KEY.get_secret_value().strip()
+        if key and not self.SMTP_HOST:
+            self.SMTP_HOST, self.SMTP_PORT, self.SMTP_USER = "smtp.resend.com", 587, "resend"
+            self.SMTP_PASSWORD, self.SMTP_FROM = SecretStr(key), self.SMTP_FROM or self.RESEND_FROM
+        return self
     DEV_LAN_HOST: str = ""
 
     @field_validator("DATABASE_SCHEMA")

@@ -20,6 +20,18 @@ from app.schemas.schemas import LoginRequest, LoginResponse, RecoverRequest, Rec
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def password_roles():
+    return {r.strip().upper() for r in settings.PASSWORD_LOGIN_ROLES.split(",") if r.strip()}
+
+
+def password_allowed(user):
+    roles = password_roles()
+    return not roles or user.role.value in roles
+
+
+GOOGLE_ONLY = "Ingresa con tu cuenta Google @unsa.edu.pe. La contraseña solo se usa para supervisores de centros."
+
+
 def session_response(db, user):
     security = db.get(SeguridadCuenta, user.id)
     token = create_access_token({"sub": user.id, "role": user.role.value, "email": user.email,
@@ -31,7 +43,8 @@ def session_response(db, user):
 def capacidades_auth():
     return {"versionAcceso": 1, "restauracion": True,
             "google": bool(settings.GOOGLE_CLIENT_IDS.strip()), "dominioGoogle": "unsa.edu.pe",
-            "recuperacion": bool(settings.SMTP_HOST and settings.SMTP_FROM)}
+            "recuperacion": bool(settings.SMTP_HOST and settings.SMTP_FROM),
+            "contrasenaRoles": sorted(password_roles()) or None}
 
 
 @router.get("/me", response_model=UserOut)
@@ -44,11 +57,15 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email.lower()).first()
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(401, "Correo o contraseña incorrectos.")
+    if not password_allowed(user):
+        raise HTTPException(403, GOOGLE_ONLY)
     return session_response(db, user)
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
+    if password_roles() and "ALUMNO" not in password_roles():
+        raise HTTPException(403, GOOGLE_ONLY)
     if body.role != "ALUMNO":
         raise HTTPException(403, "El alta pública solo permite cuentas de alumno.")
     if len(body.password) < 10 or len(body.password.encode()) > 72 or not body.nombres or not body.apellidos:
@@ -106,7 +123,8 @@ def google_login(body: GoogleRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).with_for_update().first()
     if user and db.query(IdentidadGoogle).filter(IdentidadGoogle.user_id == user.id).first():
         raise HTTPException(409, "La cuenta SSP ya está vinculada a otra identidad de Google. Contacta a administración.")
-    if user:
+    # Con acceso solo por Google, el correo institucional verificado basta para vincular la cuenta creada por administración.
+    if user and not password_roles():
         if body.passwordSsp is None:
             raise HTTPException(428, "Ya existe una cuenta SSP con este correo. Confirma su contraseña SSP para vincular Google por primera vez.")
         password = body.passwordSsp.get_secret_value()
@@ -135,7 +153,7 @@ def recover(body: RecoverRequest, db: Session = Depends(get_db)):
     if not settings.SMTP_HOST or not settings.SMTP_FROM:
         raise HTTPException(503, "La recuperación requiere configurar el servicio de correo. Contacta a administración.")
     user = db.query(User).filter(User.email == body.email.lower()).with_for_update().first()
-    if user:
+    if user and password_allowed(user):
         now = datetime.now(timezone.utc)
         recent = db.query(RecuperacionCuenta).filter(RecuperacionCuenta.user_id == user.id,
                     RecuperacionCuenta.created_at > now - timedelta(minutes=2)).first()
