@@ -38,6 +38,9 @@ class ModulePagesTests(unittest.TestCase):
         self.assertTrue(all(len(row['resumen']) == 180 and 'mensaje' not in row for row in rows))
         only = pages.announcements('a', True, 20, None, self.db, self.users['student'])
         self.assertEqual(only['total'], 17); self.assertIsNone(only['siguiente'])
+        self.assertEqual(pages.announcements('a', False, 20, None, self.db, self.users['student'], q='Anuncio 044')['total'], 1)
+        self.assertEqual(pages.announcements('a', False, 20, None, self.db, self.users['student'], q='contenido')['total'], 45)
+        self.assertEqual(pages.announcements('a', False, 20, None, self.db, self.users['student'], q='Docente')['total'], 45)
         self.assertEqual(len(pages.announcement('a', 'an-000', self.db, self.users['student']).mensaje), 10000)
 
     def test_threads_and_replies_stable_pages_and_exact_context(self):
@@ -47,6 +50,8 @@ class ModulePagesTests(unittest.TestCase):
         replies = self.all_pages(lambda cursor: pages.forum_messages('fh-000', 20, cursor, self.db, self.users['student']))
         self.assertEqual(replies[0].id, 'fm-044')
         self.assertEqual(pages.thread('a', 'fh-000', self.db, self.users['student'])['respuestas'], 45)
+        self.assertEqual(pages.threads('a', 20, None, self.db, self.users['student'], q='Tema 044')['total'], 1)
+        self.assertEqual(pages.threads('a', 20, None, self.db, self.users['student'], q='Alumno')['total'], 45)
         self.db.add(Aula(id='b', nombre='Otra aula', codigo='B', periodo='TEST', profesor_id='teacher'))
         self.db.add(Inscripcion(aula_id='b', alumno_id='student')); self.db.commit()
         self.expect(404, pages.thread, 'b', 'fh-000', self.db, self.users['student'])
@@ -71,6 +76,13 @@ class ModulePagesTests(unittest.TestCase):
         for value in ['bad', 'x' * 2050]:
             self.expect(422, pages.threads, 'a', 20, value, self.db, self.users['student'])
         self.expect(422, pages.threads, 'a', 0, None, self.db, self.users['student'])
+        first_search = pages.threads('a', 20, None, self.db, self.users['student'], q='Tema 0')
+        with self.assertRaises(HTTPException) as cursor_error:
+            pages.threads('a', 20, first_search['siguiente'], self.db, self.users['student'], q='Tema 1')
+        self.assertEqual(cursor_error.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as error:
+            pages.announcements('a', False, 20, None, self.db, self.users['student'], q='x' * 121)
+        self.assertEqual(error.exception.status_code, 422)
 
     def test_membership_withdrawn_and_closed_class_reads(self):
         self.rows()

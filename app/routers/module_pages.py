@@ -48,15 +48,25 @@ def _page(query, model, scope, limit, cursor, pack, pinned=False):
     return {"items": [pack(row) for row in shown], "total": total, "siguiente": next_cursor}
 
 
+def _busqueda(value: str) -> str:
+    value = value.strip().lower()
+    if len(value) > 120:
+        raise HTTPException(422, "La búsqueda admite hasta 120 caracteres.")
+    return value
+
+
 @router.get("/aulas/{aula_id}/anuncios/pagina")
 def announcements(aula_id: str, fijados: bool = False, limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
-                  db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+                  db: Session = Depends(get_db), current_user: User = Depends(get_current_user), q: str = ""):
     _aula_con_acceso(aula_id, current_user, db)
+    q = _busqueda(q)
     query = db.query(Anuncio.id, Anuncio.aula_id, Anuncio.autor_nombre, Anuncio.titulo,
         Anuncio.fijado, Anuncio.created_at, func.substr(Anuncio.mensaje, 1, 180).label('resumen')).filter(Anuncio.aula_id == aula_id)
     if fijados:
         query = query.filter(Anuncio.fijado == 1)
-    return _page(query, Anuncio, f'anuncios:{current_user.id}:{aula_id}:{fijados}', limite, cursor,
+    if q:
+        query = query.filter(func.lower(Anuncio.titulo + " " + Anuncio.autor_nombre + " " + Anuncio.mensaje).contains(q, autoescape=True))
+    return _page(query, Anuncio, f'anuncios:{current_user.id}:{aula_id}:{fijados}:{q}', limite, cursor,
         lambda row: {"id": row.id, "aulaId": row.aula_id, "titulo": row.titulo, "autorNombre": row.autor_nombre,
                      "fijado": bool(row.fijado), "fecha": row.created_at.isoformat(), "resumen": row.resumen}, pinned=True)
 
@@ -82,10 +92,13 @@ def _thread_out(row):
 
 @router.get("/aulas/{aula_id}/foros/pagina")
 def threads(aula_id: str, limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
-            db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+            db: Session = Depends(get_db), current_user: User = Depends(get_current_user), q: str = ""):
     _aula_con_acceso(aula_id, current_user, db)
-    return _page(_thread_query(db).filter(ForoHilo.aula_id == aula_id), ForoHilo,
-                 f'foros:{current_user.id}:{aula_id}', limite, cursor, _thread_out)
+    q = _busqueda(q)
+    query = _thread_query(db).filter(ForoHilo.aula_id == aula_id)
+    if q:
+        query = query.filter(func.lower(ForoHilo.titulo + " " + ForoHilo.autor_nombre).contains(q, autoescape=True))
+    return _page(query, ForoHilo, f'foros:{current_user.id}:{aula_id}:{q}', limite, cursor, _thread_out)
 
 
 @router.get("/aulas/{aula_id}/foros/{hilo_id}/detalle")
