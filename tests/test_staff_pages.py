@@ -244,7 +244,7 @@ class StaffPagesTests(unittest.TestCase):
         self.denied(422, pages.goal_page, 'goal-practice', 'INVALID', '', 20, None)
         self.denied(422, pages.goal_page, 'goal-practice', 'TODAS', 'x' * 121, 20, None)
         self.denied(422, pages.goal_page, 'goal-practice', 'TODAS', '', 0, None)
-        self.denied(403, pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='student')
+        self.assertEqual(self.call(pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='student')['totalMetas'], 45)
         self.denied(404, pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='otherteacher')
         self.assertEqual(self.call(pages.goal_page, 'goal-practice', 'TODAS', '', 20, None, role='admin')['totalMetas'], 45)
 

@@ -213,7 +213,7 @@ def _staff_practice(current_user):
 @router.get('/practicas/{practica_id}/metas/pagina')
 def goal_page(practica_id: str, estado: str = 'TODAS', q: str = '', limite: int = Query(20, ge=1, le=40),
               cursor: str | None = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    _staff_practice(current_user)
+    # También el alumno: require_practice limita cada rol a sus prácticas visibles (el alumno, solo las propias).
     require_practice(db, current_user, practica_id)
     if estado not in ('TODAS', 'EN_PROGRESO', 'COMPLETADAS'):
         raise HTTPException(422, 'Selecciona todas, en progreso o completadas.')
