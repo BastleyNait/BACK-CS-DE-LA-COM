@@ -138,6 +138,18 @@ class FunctionalBaseTests(unittest.TestCase):
         self.db.commit()
         self.expect(422, auth.reset_password, auth.ResetRequest(codigo=code, password='NuevaFicticia-2026'), self.db)
 
+    def test_center_pages_show_student_account_and_active_classrooms(self):
+        first = asignaciones.centros_pagina('', 1, None, self.db, self.users['admin'])
+        self.assertEqual((first['total'], first['items'][0]['nombre']), (2, 'Centro alumno'))
+        row = first['items'][0]
+        self.assertEqual((row['alumnoId'], row['supervisorEmail'], row['contacto']), ('alumno', 'supervisor@unsa.edu.pe', 'Supervisor Prueba'))
+        self.assertEqual([a['id'] for a in row['aulas']], ['a'])
+        second = asignaciones.centros_pagina('', 1, first['siguiente'], self.db, self.users['admin'])
+        self.assertEqual((second['items'][0]['nombre'], second['items'][0]['supervisorId'], second['siguiente']), ('Centro otro', None, None))
+        self.assertEqual(asignaciones.centros_pagina('OTRO', 20, None, self.db, self.users['admin'])['total'], 1)
+        self.expect(422, asignaciones.centros_pagina, '', 20, first['siguiente'][:-2] + 'xx', self.db, self.users['admin'])
+        self.expect(403, asignaciones.centros_pagina, '', 20, None, self.db, self.users['docente'])
+
     def test_assignment_requires_admin_enrollment_and_own_center(self):
         self.expect(403, asignaciones.asignar_practica, self.assignment(), self.db, self.users['docente'])
         self.expect(422, asignaciones.asignar_practica, self.assignment(empresaId='e-otro'), self.db, self.users['admin'])

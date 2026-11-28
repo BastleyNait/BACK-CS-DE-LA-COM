@@ -1,14 +1,16 @@
 """Asignación administrativa de prácticas y acceso de supervisores."""
 from hashlib import sha256
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field, StrictInt
-from sqlalchemy import text
+from sqlalchemy import func, text
+from sqlalchemy.orm import aliased
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.deps import get_current_user
 from app.core.security import hash_password
 from app.db.session import get_db
-from app.models.models import Aula, Empresa, Inscripcion, Practica, PracticaEstadoEnum, Supervisor, User, RoleEnum
+from app.models.models import Aula, AulaEstadoEnum, Empresa, Inscripcion, Practica, PracticaEstadoEnum, Supervisor, User, RoleEnum
+from app.routers.staff_pages import _alphabetic, _search
 from app.routers.admin import _solo_admin, _auditar, _to_out
 from app.routers.practicas import _to_practica_out
 
@@ -32,6 +34,32 @@ def datos_asignaciones(db: Session = Depends(get_db), current_user: User = Depen
                          "supervisorId": contacts[e.id].user_id if e.id in contacts else None,
                          "contacto": (contacts[e.id].nombres + " " + contacts[e.id].apellidos) if e.id in contacts else "Sin contacto"}
                         for e in db.query(Empresa).order_by(Empresa.razon_social).all()]}
+
+
+@router.get("/centros/pagina")
+def centros_pagina(q: str = "", limite: int = Query(20, ge=1, le=40), cursor: str | None = None,
+                   db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Centros registrados por páginas, con su alumno, el contacto, la cuenta de supervisión y las aulas activas del alumno."""
+    _solo_admin(current_user)
+    q = _search(q)
+    student = aliased(User)
+    query = db.query(Empresa, student).join(student, student.id == Empresa.practicante_id)
+    if q:
+        query = query.filter(func.lower(Empresa.razon_social + " " + student.nombres + " " + student.apellidos + " " + student.email).contains(q, autoescape=True))
+
+    def pack(row):
+        centro, alumno = row[0], row[1]
+        contact = db.query(Supervisor).filter(Supervisor.empresa_id == centro.id).first()
+        account = db.get(User, contact.user_id) if contact and contact.user_id else None
+        aulas = db.query(Aula).join(Inscripcion, Inscripcion.aula_id == Aula.id).filter(
+            Inscripcion.alumno_id == alumno.id, Aula.estado == AulaEstadoEnum.ACTIVA).order_by(Aula.nombre).limit(20).all()
+        return {"id": centro.id, "nombre": centro.razon_social, "alumnoId": alumno.id,
+                "alumnoNombre": f"{alumno.nombres} {alumno.apellidos}", "alumnoEmail": alumno.email,
+                "contacto": f"{contact.nombres} {contact.apellidos}" if contact else "Sin contacto",
+                "supervisorId": account.id if account else None, "supervisorEmail": account.email if account else None,
+                "aulas": [{"id": a.id, "nombre": a.nombre, "periodo": a.periodo} for a in aulas]}
+    return _alphabetic(query, func.lower(Empresa.razon_social), Empresa.id,
+        f"centros-admin:{current_user.id}:{q}", limite, cursor, pack)
 
 
 class CrearSupervisorRequest(BaseModel):
