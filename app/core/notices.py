@@ -1,5 +1,6 @@
 """Avisos dentro de la app, en la misma transacción del evento académico."""
 from hashlib import sha256
+from app.core.push import queue_push
 from app.models.models import Inscripcion, Notificacion, NotificacionTipoEnum
 
 
@@ -7,6 +8,7 @@ def add_notice(db, user_id, event, tipo, title, message, target):
     notice_id = "n-" + sha256(f"{event}|{user_id}".encode()).hexdigest()
     db.add(Notificacion(id=notice_id, user_id=user_id, tipo=NotificacionTipoEnum(tipo),
         titulo=title[:200], mensaje=message, destino=target, leida=0))
+    queue_push(db, user_id, title[:200], message, target)
 
 
 def task_notices(db, task, revision=None):

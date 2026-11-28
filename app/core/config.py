@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     SMTP_FROM: str = ""
     # Resend por SMTP: basta con la API key. Sin dominio propio verificado, Resend solo entrega
     # al correo dueño de la cuenta; RESEND_FROM cambia el remitente cuando se verifique un dominio.
+    # Web Push (VAPID). Sin llaves, la app no ofrece activar notificaciones.
+    VAPID_PUBLIC_KEY: str = ""
+    VAPID_PRIVATE_KEY: SecretStr = SecretStr("")
+    VAPID_SUBJECT: str = "https://practicascc-entrega-27nov-2026.vercel.app"
     RESEND_API_KEY: SecretStr = SecretStr("")
     RESEND_FROM: str = "PrácticasCC <onboarding@resend.dev>"
 

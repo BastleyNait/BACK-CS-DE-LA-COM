@@ -105,3 +105,5 @@ def version_avance():
 
 from app.routers import staff_pages
 app.include_router(staff_pages.router, prefix=API_PREFIX)
+from app.routers import push
+app.include_router(push.router, prefix=API_PREFIX)

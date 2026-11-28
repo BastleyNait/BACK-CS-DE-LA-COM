@@ -103,6 +103,17 @@ class IdentidadGoogle(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class SuscripcionPush(Base):
+    """Suscripción Web Push de un navegador (endpoint del servicio push y llaves de cifrado del cliente)."""
+    __tablename__ = "suscripciones_push"
+    id = Column(String(64), primary_key=True)  # sha256 del endpoint
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(String(200), nullable=False)
+    auth = Column(String(100), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class SeguridadCuenta(Base):
     __tablename__ = "seguridad_cuentas"
     user_id = Column(String, ForeignKey("users.id"), primary_key=True)

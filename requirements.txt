@@ -13,3 +13,4 @@ python-multipart==0.0.20
 reportlab==4.5.1
 google-auth==2.62.0
 requests==2.34.2
+pywebpush==2.0.3
